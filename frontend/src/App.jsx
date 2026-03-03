@@ -10,14 +10,22 @@ import ChannelViewPage from './pages/ChannelViewPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="loading-screen">Загрузка...</div>;
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center text-gray-400">
+      Загрузка...
+    </div>
+  );
   if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 function PublicRoute({ children }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="loading-screen">Загрузка...</div>;
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center text-gray-400">
+      Загрузка...
+    </div>
+  );
   if (user) return <Navigate to="/chats" replace />;
   return children;
 }
@@ -83,7 +91,9 @@ export default function App() {
   return (
     <AuthProvider>
       <SocketProvider>
-        <AppRoutes />
+        <div className="bg-gradient-to-br from-slate-950 via-gray-900 to-slate-950 text-gray-100 h-screen overflow-hidden">
+          <AppRoutes />
+        </div>
       </SocketProvider>
     </AuthProvider>
   );

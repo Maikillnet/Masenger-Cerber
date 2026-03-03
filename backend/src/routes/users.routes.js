@@ -54,7 +54,10 @@ router.put('/profile', async (req, res) => {
         return res.status(400).json({ error: 'Имя пользователя не может быть пустым' });
       }
       const existing = await prisma.user.findFirst({
-        where: { username: trimmed, NOT: { id: req.user.id } },
+        where: {
+          username: { equals: trimmed, mode: 'insensitive' },
+          id: { not: req.user.id },
+        },
       });
       if (existing) {
         return res.status(400).json({ error: 'Имя пользователя уже занято' });
@@ -89,8 +92,12 @@ router.post('/avatar', upload.single('avatar'), async (req, res) => {
 
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (user?.avatar) {
-      const oldPath = path.join(__dirname, '../../', user.avatar.replace(/^\//, ''));
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      try {
+        const oldPath = path.join(__dirname, '../../', user.avatar.replace(/^\//, ''));
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      } catch (unlinkErr) {
+        console.warn('Avatar cleanup: failed to remove old file:', unlinkErr.message);
+      }
     }
 
     const updatedUser = await prisma.user.update({

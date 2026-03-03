@@ -32,11 +32,11 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="auth-page">
-      <div className="auth-card">
-        <h1>Регистрация</h1>
-        <form onSubmit={handleSubmit}>
-          {error && <div className="error-msg">{error}</div>}
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-slate-950 via-gray-900 to-slate-950">
+      <div className="w-full max-w-md bg-white/10 backdrop-blur-md border border-white/10 rounded-2xl p-8 shadow-2xl">
+        <h1 className="text-2xl font-semibold text-gray-100 mb-6">Регистрация</h1>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {error && <div className="p-3 rounded-xl bg-red-500/20 text-red-400 text-sm border border-red-500/30">{error}</div>}
           <input
             type="text"
             placeholder="Имя пользователя"
@@ -45,6 +45,7 @@ export default function RegisterPage() {
             required
             minLength={2}
             autoComplete="username"
+            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all"
           />
           <input
             type="email"
@@ -53,6 +54,7 @@ export default function RegisterPage() {
             onChange={(e) => setEmail(e.target.value)}
             required
             autoComplete="email"
+            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all"
           />
           <input
             type="password"
@@ -62,13 +64,18 @@ export default function RegisterPage() {
             required
             minLength={6}
             autoComplete="new-password"
+            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all"
           />
-          <button type="submit" disabled={loading}>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 rounded-xl bg-blue-500/30 text-blue-300 font-medium border border-blue-500/50 hover:bg-blue-500/40 transition-all disabled:opacity-50"
+          >
             {loading ? 'Регистрация...' : 'Зарегистрироваться'}
           </button>
         </form>
-        <p className="auth-link">
-          Уже есть аккаунт? <Link to="/login">Войти</Link>
+        <p className="mt-6 text-center text-gray-500">
+          Уже есть аккаунт? <Link to="/login" className="text-blue-400 hover:text-blue-300">Войти</Link>
         </p>
       </div>
     </div>

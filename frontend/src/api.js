@@ -111,10 +111,6 @@ export async function getChat(id) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Чат не найден');
   return data;
-  const res = await fetch(`${API_BASE}/chats/${id}`, { headers: getHeaders() });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Чат не найден');
-  return data;
 }
 
 export async function createChat(otherUserId) {
@@ -167,11 +163,25 @@ export async function getMessages(chatId) {
   return data;
 }
 
-export async function sendMessage(chatId, text) {
+export async function sendMessage(chatId, text, mediaFile = null) {
+  const token = localStorage.getItem('token');
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  let body;
+  if (mediaFile) {
+    const formData = new FormData();
+    formData.append('text', text || '');
+    formData.append('media', mediaFile);
+    body = formData;
+  } else {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify({ text: text || '' });
+  }
+
   const res = await fetch(`${API_BASE}/chats/${chatId}/messages`, {
     method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ text }),
+    headers,
+    body,
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка отправки');
@@ -248,11 +258,25 @@ export async function getChannelPosts(channelId) {
   return data;
 }
 
-export async function createPost(channelId, content) {
+export async function createPost(channelId, content, mediaFile = null) {
+  const token = localStorage.getItem('token');
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  let body;
+  if (mediaFile) {
+    const formData = new FormData();
+    formData.append('content', content || '');
+    formData.append('media', mediaFile);
+    body = formData;
+  } else {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify({ content: content || '' });
+  }
+
   const res = await fetch(`${API_BASE}/channels/${channelId}/posts`, {
     method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ content }),
+    headers,
+    body,
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка публикации');

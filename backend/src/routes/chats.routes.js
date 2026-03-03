@@ -1,8 +1,46 @@
 import { Router } from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import prisma from '../lib/prisma.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const CHAT_MEDIA_DIR = path.join(__dirname, '../../uploads/media');
+if (!fs.existsSync(CHAT_MEDIA_DIR)) {
+  fs.mkdirSync(CHAT_MEDIA_DIR, { recursive: true });
+}
+
+const chatMediaStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, CHAT_MEDIA_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4'];
+    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    cb(null, `chat-${req.user.id}-${Date.now()}${safeExt}`);
+  },
+});
+
+const uploadChatMedia = multer({
+  storage: chatMediaStorage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|webp|gif|mp4)$/i;
+    if (allowed.test(file.originalname)) cb(null, true);
+    else cb(new Error('Разрешены: jpg, png, webp, gif, mp4'));
+  },
+});
+
+function getMediaType(filename) {
+  const ext = (filename || '').toLowerCase().split('.').pop();
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+  if (ext === 'mp4') return 'video';
+  return 'document';
+}
+
 router.use(authenticateToken);
 
 // GET /api/chats — список чатов текущего пользователя
@@ -221,6 +259,7 @@ router.get('/:id', async (req, res) => {
       name: chat.name,
       otherUser: other,
       pinnedMessage: chat.pinnedMessage,
+      participantCount: chat.userChats?.length ?? 0,
       updatedAt: chat.updatedAt,
     });
   } catch (err) {
@@ -255,12 +294,19 @@ router.get('/:id/messages', async (req, res) => {
   }
 });
 
-// POST /api/chats/:id/messages — отправить сообщение
-router.post('/:id/messages', async (req, res) => {
+// POST /api/chats/:id/messages — отправить сообщение (JSON или multipart с media)
+router.post('/:id/messages', (req, res, next) => {
+  uploadChatMedia.single('media')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+    next();
+  });
+}, async (req, res) => {
   try {
-    const { text } = req.body;
-    if (!text?.trim()) {
-      return res.status(400).json({ error: 'Текст сообщения не может быть пустым' });
+    const text = (req.body.text || '').trim();
+    const hasMedia = !!req.file;
+
+    if (!text && !hasMedia) {
+      return res.status(400).json({ error: 'Укажите текст или прикрепите файл' });
     }
 
     const chat = await prisma.chat.findFirst({
@@ -272,12 +318,18 @@ router.post('/:id/messages', async (req, res) => {
     });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
 
+    const messageData = {
+      text: text || '',
+      senderId: req.user.id,
+      chatId: req.params.id,
+    };
+    if (hasMedia) {
+      messageData.mediaUrl = `/uploads/media/${req.file.filename}`;
+      messageData.mediaType = getMediaType(req.file.filename);
+    }
+
     const message = await prisma.message.create({
-      data: {
-        text: text.trim(),
-        senderId: req.user.id,
-        chatId: req.params.id,
-      },
+      data: messageData,
       include: {
         sender: { select: { id: true, username: true, avatar: true } },
       },
@@ -288,13 +340,11 @@ router.post('/:id/messages', async (req, res) => {
       data: { updatedAt: new Date() },
     });
 
-    // Отправляем всем участникам (кроме отправителя) через Socket.IO
+    // Рассылка сообщения обоим участникам чата через Socket.IO
     const io = req.app.get('io');
     if (io) {
-      const recipientIds = chat.userChats
-        .map((uc) => uc.userId)
-        .filter((id) => id !== req.user.id);
-      recipientIds.forEach((id) => io.to(id).emit('receive_message', message));
+      const participantIds = chat.userChats.map((uc) => uc.userId);
+      participantIds.forEach((id) => io.to(id).emit('receive_message', message));
     }
 
     res.status(201).json(message);

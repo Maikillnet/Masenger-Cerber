@@ -1,8 +1,49 @@
 import { Router } from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import prisma from '../lib/prisma.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const MEDIA_DIR = path.join(__dirname, '../../uploads/media');
+if (!fs.existsSync(MEDIA_DIR)) {
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
+
+const mediaStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, MEDIA_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.mp4'];
+    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    cb(null, `${req.user.id}-${Date.now()}${safeExt}`);
+  },
+});
+
+const uploadMedia = multer({
+  storage: mediaStorage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|webp|mp4)$/i;
+    if (allowed.test(file.originalname)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Разрешены: jpg, png, webp, mp4'));
+    }
+  },
+});
+
+function getMediaType(filename) {
+  const ext = (filename || '').toLowerCase().split('.').pop();
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return 'image';
+  if (ext === 'mp4') return 'video';
+  return 'document';
+}
+
 router.use(authenticateToken);
 
 function slugify(str) {
@@ -187,12 +228,14 @@ router.get('/:id/posts', async (req, res) => {
   }
 });
 
-// POST /api/channels/:id/posts — создать пост (только админ)
-router.post('/:id/posts', async (req, res) => {
+// POST /api/channels/:id/posts — создать пост (только админ), multipart/form-data: content, media
+router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
   try {
-    const { content } = req.body;
-    if (!content?.trim()) {
-      return res.status(400).json({ error: 'Текст поста не может быть пустым' });
+    const content = (req.body.content || '').trim();
+    const hasMedia = !!req.file;
+
+    if (!content && !hasMedia) {
+      return res.status(400).json({ error: 'Укажите текст или прикрепите медиафайл' });
     }
 
     const channel = await prisma.channel.findFirst({
@@ -207,12 +250,19 @@ router.post('/:id/posts', async (req, res) => {
       return res.status(403).json({ error: 'Только админ может публиковать посты' });
     }
 
+    const postData = {
+      content: content || '',
+      authorId: req.user.id,
+      channelId: req.params.id,
+    };
+
+    if (hasMedia) {
+      postData.mediaUrl = `/uploads/media/${req.file.filename}`;
+      postData.mediaType = getMediaType(req.file.filename);
+    }
+
     const post = await prisma.post.create({
-      data: {
-        content: content.trim(),
-        authorId: req.user.id,
-        channelId: req.params.id,
-      },
+      data: postData,
       include: {
         author: { select: { id: true, username: true, avatar: true } },
       },
@@ -226,7 +276,7 @@ router.post('/:id/posts', async (req, res) => {
     res.status(201).json(post);
   } catch (err) {
     console.error('Create post error:', err);
-    res.status(500).json({ error: 'Ошибка публикации' });
+    res.status(500).json({ error: err.message || 'Ошибка публикации' });
   }
 });
 

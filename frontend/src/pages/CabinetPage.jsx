@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   updateProfile,
   uploadAvatar,
@@ -121,162 +121,139 @@ export default function CabinetPage() {
 
   const avatarSrc = user.avatar ? user.avatar : null;
 
+  const inputClass = "mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all";
+  const labelClass = "block mb-2 text-sm text-gray-400";
+  const btnPrimary = "w-full py-3 rounded-xl bg-blue-500/30 text-blue-300 font-medium border border-blue-500/50 hover:bg-blue-500/40 transition-all disabled:opacity-50";
+
   return (
-    <div className="cabinet">
-      <header className="cabinet-header">
-        <h1>Личный кабинет</h1>
-        <button className="btn-logout" onClick={() => { logout(); navigate('/login'); }}>
+    <div className="min-h-screen p-6 max-w-2xl mx-auto">
+      <header className="flex justify-between items-center mb-8">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-semibold text-gray-100">Личный кабинет</h1>
+          <Link to="/chats" className="text-sm text-blue-400 hover:text-blue-300">Чаты</Link>
+          <Link to="/channels" className="text-sm text-blue-400 hover:text-blue-300">Каналы</Link>
+        </div>
+        <button
+          className="px-4 py-2 rounded-xl bg-black/40 text-gray-400 border border-white/10 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 transition-all"
+          onClick={() => { logout(); navigate('/login'); }}
+        >
           Выйти
         </button>
       </header>
 
-      <nav className="cabinet-tabs">
-        <button className={activeTab === 'profile' ? 'active' : ''} onClick={() => setActiveTab('profile')}>
+      <nav className="flex gap-2 mb-8">
+        <button
+          className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+            activeTab === 'profile' ? 'bg-blue-500/30 text-blue-300 border border-blue-500/50' : 'bg-black/40 text-gray-400 border border-white/10 hover:bg-white/5'
+          }`}
+          onClick={() => setActiveTab('profile')}
+        >
           Профиль
         </button>
-        <button className={activeTab === 'password' ? 'active' : ''} onClick={() => setActiveTab('password')}>
+        <button
+          className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+            activeTab === 'password' ? 'bg-blue-500/30 text-blue-300 border border-blue-500/50' : 'bg-black/40 text-gray-400 border border-white/10 hover:bg-white/5'
+          }`}
+          onClick={() => setActiveTab('password')}
+        >
           Пароль
         </button>
-        <button className={activeTab === 'notifications' ? 'active' : ''} onClick={() => { setActiveTab('notifications'); loadNotifications(); }}>
+        <button
+          className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+            activeTab === 'notifications' ? 'bg-blue-500/30 text-blue-300 border border-blue-500/50' : 'bg-black/40 text-gray-400 border border-white/10 hover:bg-white/5'
+          }`}
+          onClick={() => { setActiveTab('notifications'); loadNotifications(); }}
+        >
           Уведомления
         </button>
       </nav>
 
-      <main className="cabinet-content">
+      <main className="bg-white/10 backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-2xl">
         {activeTab === 'profile' && (
-          <section className="cabinet-section">
-            <h2>Редактирование профиля</h2>
+          <section>
+            <h2 className="text-lg font-semibold text-gray-100 mb-6">Редактирование профиля</h2>
 
-            <div className="avatar-block">
-              <div className="avatar-wrap">
-                {avatarSrc ? (
-                  <img src={avatarSrc} alt="Аватар" className="avatar-img" />
-                ) : (
-                  <div className="avatar-placeholder">{user.username?.[0]?.toUpperCase() || '?'}</div>
-                )}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/gif,image/webp"
-                  onChange={handleAvatarChange}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  type="button"
-                  className="btn-avatar"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={avatarLoading}
-                >
-                  {avatarLoading ? 'Загрузка...' : 'Изменить аватар'}
-                </button>
-              </div>
-              {avatarError && <div className="error-msg">{avatarError}</div>}
-            </div>
-
-            <form onSubmit={handleProfileSubmit}>
-              {profileError && <div className="error-msg">{profileError}</div>}
-              {profileSuccess && <div className="success-msg">{profileSuccess}</div>}
-              <label>
-                Имя пользователя
-                <input
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                  minLength={2}
-                />
-              </label>
-              <label>
-                О себе
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  rows={3}
-                  placeholder="Расскажите о себе"
-                />
-              </label>
-              <button type="submit" disabled={profileLoading}>
-                {profileLoading ? 'Сохранение...' : 'Сохранить'}
+            <div className="flex items-center gap-4 mb-6">
+              {avatarSrc ? (
+                <img src={avatarSrc} alt="Аватар" className="w-20 h-20 rounded-full object-cover border-2 border-white/10" />
+              ) : (
+                <div className="w-20 h-20 rounded-full bg-blue-500/30 flex items-center justify-center text-2xl text-white font-medium">
+                  {user.username?.[0]?.toUpperCase() || '?'}
+                </div>
+              )}
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={handleAvatarChange} className="hidden" />
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl bg-black/40 text-gray-300 border border-white/10 hover:bg-white/10 transition-all disabled:opacity-50"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={avatarLoading}
+              >
+                {avatarLoading ? 'Загрузка...' : 'Изменить аватар'}
               </button>
+            </div>
+            {avatarError && <div className="mb-4 p-3 rounded-xl bg-red-500/20 text-red-400 text-sm border border-red-500/30">{avatarError}</div>}
+
+            <form onSubmit={handleProfileSubmit} className="space-y-4">
+              {profileError && <div className="p-3 rounded-xl bg-red-500/20 text-red-400 text-sm border border-red-500/30">{profileError}</div>}
+              {profileSuccess && <div className="p-3 rounded-xl bg-emerald-500/20 text-emerald-400 text-sm border border-emerald-500/30">{profileSuccess}</div>}
+              <label className={labelClass}>
+                Имя пользователя
+                <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} required minLength={2} className={inputClass} />
+              </label>
+              <label className={labelClass}>
+                О себе
+                <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} placeholder="Расскажите о себе" className={inputClass} />
+              </label>
+              <button type="submit" disabled={profileLoading} className={btnPrimary}>{profileLoading ? 'Сохранение...' : 'Сохранить'}</button>
             </form>
           </section>
         )}
 
         {activeTab === 'password' && (
-          <section className="cabinet-section">
-            <h2>Смена пароля</h2>
-            <form onSubmit={handlePasswordSubmit}>
-              {passwordError && <div className="error-msg">{passwordError}</div>}
-              {passwordSuccess && <div className="success-msg">{passwordSuccess}</div>}
-              <label>
+          <section>
+            <h2 className="text-lg font-semibold text-gray-100 mb-6">Смена пароля</h2>
+            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+              {passwordError && <div className="p-3 rounded-xl bg-red-500/20 text-red-400 text-sm border border-red-500/30">{passwordError}</div>}
+              {passwordSuccess && <div className="p-3 rounded-xl bg-emerald-500/20 text-emerald-400 text-sm border border-emerald-500/30">{passwordSuccess}</div>}
+              <label className={labelClass}>
                 Текущий пароль
-                <input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  required
-                />
+                <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required className={inputClass} />
               </label>
-              <label>
+              <label className={labelClass}>
                 Новый пароль
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  minLength={6}
-                />
+                <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={6} className={inputClass} />
               </label>
-              <label>
+              <label className={labelClass}>
                 Подтвердите новый пароль
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
-                />
+                <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required className={inputClass} />
               </label>
-              <button type="submit" disabled={passwordLoading}>
-                {passwordLoading ? 'Сохранение...' : 'Изменить пароль'}
-              </button>
+              <button type="submit" disabled={passwordLoading} className={btnPrimary}>{passwordLoading ? 'Сохранение...' : 'Изменить пароль'}</button>
             </form>
           </section>
         )}
 
         {activeTab === 'notifications' && (
-          <section className="cabinet-section">
-            <h2>Настройки уведомлений</h2>
-            <p className="muted">Заглушка — настройки будут доступны позже</p>
-            {notifLoading && <p>Загрузка...</p>}
+          <section>
+            <h2 className="text-lg font-semibold text-gray-100 mb-6">Настройки уведомлений</h2>
+            <p className="text-gray-500 mb-4">Управление уведомлениями</p>
+            {notifLoading && <p className="text-gray-500 mb-4">Загрузка...</p>}
             {notifSettings && (
-              <div className="notif-settings">
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={notifSettings.emailNotifications ?? true}
-                    onChange={(e) => handleNotifChange('emailNotifications', e.target.checked)}
-                  />
-                  Email-уведомления
+              <div className="space-y-4">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input type="checkbox" checked={notifSettings.emailNotifications ?? true} onChange={(e) => handleNotifChange('emailNotifications', e.target.checked)} className="rounded bg-black/40 border-white/10" />
+                  <span className="text-gray-200">Email-уведомления</span>
                 </label>
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={notifSettings.pushEnabled ?? false}
-                    onChange={(e) => handleNotifChange('pushEnabled', e.target.checked)}
-                  />
-                  Push-уведомления
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input type="checkbox" checked={notifSettings.pushEnabled ?? false} onChange={(e) => handleNotifChange('pushEnabled', e.target.checked)} className="rounded bg-black/40 border-white/10" />
+                  <span className="text-gray-200">Push-уведомления</span>
                 </label>
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={notifSettings.soundEnabled ?? true}
-                    onChange={(e) => handleNotifChange('soundEnabled', e.target.checked)}
-                  />
-                  Звук
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input type="checkbox" checked={notifSettings.soundEnabled ?? true} onChange={(e) => handleNotifChange('soundEnabled', e.target.checked)} className="rounded bg-black/40 border-white/10" />
+                  <span className="text-gray-200">Звук</span>
                 </label>
               </div>
             )}
-            {notifError && <div className="error-msg">{notifError}</div>}
+            {notifError && <div className="mt-4 p-3 rounded-xl bg-red-500/20 text-red-400 text-sm border border-red-500/30">{notifError}</div>}
           </section>
         )}
       </main>
