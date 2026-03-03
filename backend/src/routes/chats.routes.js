@@ -10,8 +10,12 @@ const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CHAT_MEDIA_DIR = path.join(__dirname, '../../uploads/media');
+const GROUP_AVATARS_DIR = path.join(__dirname, '../../uploads/avatars');
 if (!fs.existsSync(CHAT_MEDIA_DIR)) {
   fs.mkdirSync(CHAT_MEDIA_DIR, { recursive: true });
+}
+if (!fs.existsSync(GROUP_AVATARS_DIR)) {
+  fs.mkdirSync(GROUP_AVATARS_DIR, { recursive: true });
 }
 
 const chatMediaStorage = multer.diskStorage({
@@ -31,6 +35,26 @@ const uploadChatMedia = multer({
     const allowed = /\.(jpg|jpeg|png|webp|gif|mp4)$/i;
     if (allowed.test(file.originalname)) cb(null, true);
     else cb(new Error('Разрешены: jpg, png, webp, gif, mp4'));
+  },
+});
+
+const groupAvatarsStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, GROUP_AVATARS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    cb(null, `group-${req.params.id}-${Date.now()}${safeExt}`);
+  },
+});
+
+const uploadGroupAvatar = multer({
+  storage: groupAvatarsStorage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|gif|webp)$/i;
+    if (allowed.test(file.originalname)) cb(null, true);
+    else cb(new Error('Разрешены: jpg, png, gif, webp'));
   },
 });
 
@@ -128,7 +152,10 @@ router.post('/', async (req, res) => {
           isGroup: true,
           name: String(name).trim(),
           userChats: {
-            create: ids.map((userId) => ({ userId })),
+            create: ids.map((userId) => ({
+              userId,
+              role: userId === req.user.id ? 'admin' : 'member',
+            })),
           },
         },
         include: {
@@ -253,22 +280,31 @@ router.get('/:id', async (req, res) => {
     });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
     const other = chat.isGroup ? null : chat.userChats.find((uc) => uc.userId !== req.user.id)?.user;
-    res.json({
+    const base = {
       id: chat.id,
       isGroup: chat.isGroup,
       name: chat.name,
+      avatar: chat.avatar,
       otherUser: other,
       pinnedMessage: chat.pinnedMessage,
       participantCount: chat.userChats?.length ?? 0,
       updatedAt: chat.updatedAt,
-    });
+    };
+    if (chat.isGroup) {
+      base.userChats = chat.userChats.map((uc) => ({
+        userId: uc.userId,
+        role: uc.role,
+        user: uc.user,
+      }));
+    }
+    res.json(base);
   } catch (err) {
     console.error('Get chat error:', err);
     res.status(500).json({ error: 'Ошибка загрузки чата' });
   }
 });
 
-// GET /api/chats/:id/messages — сообщения чата
+// GET /api/chats/:id/messages — сообщения чата (пагинация: cursor или limit)
 router.get('/:id/messages', async (req, res) => {
   try {
     const chat = await prisma.chat.findFirst({
@@ -279,15 +315,49 @@ router.get('/:id/messages', async (req, res) => {
     });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
 
+    const limit = Math.min(parseInt(req.query.limit, 10) || 40, 40);
+    const cursor = req.query.cursor || undefined;
+
     const messages = await prisma.message.findMany({
-      where: { chatId: req.params.id, isDeleted: false },
+      where: { chatId: req.params.id },
+      take: limit,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { createdAt: 'desc' },
       include: {
         sender: { select: { id: true, username: true, avatar: true } },
+        replyTo: {
+          include: { sender: { select: { id: true, username: true } } },
+        },
       },
-      orderBy: { createdAt: 'asc' },
     });
 
-    res.json(messages);
+    const chatWithUsers = await prisma.chat.findFirst({
+      where: { id: req.params.id },
+      include: { userChats: true },
+    });
+
+    const isGroup = chatWithUsers?.isGroup ?? false;
+    const withReadStatus = messages.map((m) => {
+      const msg = { ...m };
+      if (m.senderId === req.user.id) {
+        if (isGroup) {
+          const msgTime = new Date(m.createdAt).getTime();
+          msg.isRead = chatWithUsers?.userChats?.some(
+            (uc) => uc.userId !== req.user.id && uc.lastReadAt && new Date(uc.lastReadAt).getTime() >= msgTime
+          ) ?? false;
+        }
+      }
+      return msg;
+    });
+
+    const hasMore = messages.length === limit;
+    const nextCursor = hasMore ? messages[messages.length - 1].id : null;
+
+    res.json({
+      messages: withReadStatus.reverse(),
+      nextCursor,
+      hasMore,
+    });
   } catch (err) {
     console.error('Get messages error:', err);
     res.status(500).json({ error: 'Ошибка загрузки сообщений' });
@@ -303,6 +373,7 @@ router.post('/:id/messages', (req, res, next) => {
 }, async (req, res) => {
   try {
     const text = (req.body.text || '').trim();
+    const replyToId = req.body.replyToId || null;
     const hasMedia = !!req.file;
 
     if (!text && !hasMedia) {
@@ -322,23 +393,39 @@ router.post('/:id/messages', (req, res, next) => {
       text: text || '',
       senderId: req.user.id,
       chatId: req.params.id,
+      replyToId: replyToId || undefined,
     };
     if (hasMedia) {
       messageData.mediaUrl = `/uploads/media/${req.file.filename}`;
       messageData.mediaType = getMediaType(req.file.filename);
     }
 
-    const message = await prisma.message.create({
-      data: messageData,
-      include: {
-        sender: { select: { id: true, username: true, avatar: true } },
-      },
-    });
+    let message;
+    try {
+      message = await prisma.message.create({
+        data: messageData,
+        include: {
+          sender: { select: { id: true, username: true, avatar: true } },
+          replyTo: {
+            include: { sender: { select: { id: true, username: true } } },
+          },
+        },
+      });
 
-    await prisma.chat.update({
-      where: { id: req.params.id },
-      data: { updatedAt: new Date() },
-    });
+      await prisma.chat.update({
+        where: { id: req.params.id },
+        data: { updatedAt: new Date() },
+      });
+    } catch (createErr) {
+      if (hasMedia && req.file?.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkErr) {
+          console.error('Failed to delete uploaded file:', unlinkErr);
+        }
+      }
+      throw createErr;
+    }
 
     // Рассылка сообщения обоим участникам чата через Socket.IO
     const io = req.app.get('io');
@@ -351,6 +438,86 @@ router.post('/:id/messages', (req, res, next) => {
   } catch (err) {
     console.error('Send message error:', err);
     res.status(500).json({ error: 'Ошибка отправки сообщения' });
+  }
+});
+
+// PUT /api/chats/:chatId/messages/:messageId — редактировать сообщение
+router.put('/:id/messages/:messageId', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text?.trim()) return res.status(400).json({ error: 'Укажите текст' });
+
+    const message = await prisma.message.findFirst({
+      where: {
+        id: req.params.messageId,
+        chatId: req.params.id,
+        senderId: req.user.id,
+        isDeleted: false,
+      },
+      include: {
+        sender: { select: { id: true, username: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, username: true } } } },
+      },
+    });
+    if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const updated = await prisma.message.update({
+      where: { id: req.params.messageId },
+      data: { text: text.trim(), editedAt: new Date() },
+      include: {
+        sender: { select: { id: true, username: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, username: true } } } },
+      },
+    });
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: req.params.id },
+      include: { userChats: { select: { userId: true } } },
+    });
+    const io = req.app.get('io');
+    if (io && chat) {
+      chat.userChats.forEach((uc) => io.to(uc.userId).emit('message_edited', updated));
+    }
+    res.json(updated);
+  } catch (err) {
+    console.error('Edit message error:', err);
+    res.status(500).json({ error: 'Ошибка редактирования' });
+  }
+});
+
+// DELETE /api/chats/:chatId/messages/:messageId — удалить сообщение
+router.delete('/:id/messages/:messageId', async (req, res) => {
+  try {
+    const message = await prisma.message.findFirst({
+      where: {
+        id: req.params.messageId,
+        chatId: req.params.id,
+        senderId: req.user.id,
+      },
+    });
+    if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const updated = await prisma.message.update({
+      where: { id: req.params.messageId },
+      data: { isDeleted: true, text: '', editedAt: new Date() },
+      include: {
+        sender: { select: { id: true, username: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, username: true } } } },
+      },
+    });
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: req.params.id },
+      include: { userChats: { select: { userId: true } } },
+    });
+    const io = req.app.get('io');
+    if (io && chat) {
+      chat.userChats.forEach((uc) => io.to(uc.userId).emit('message_deleted', updated));
+    }
+    res.json(updated);
+  } catch (err) {
+    console.error('Delete message error:', err);
+    res.status(500).json({ error: 'Ошибка удаления' });
   }
 });
 
@@ -446,6 +613,286 @@ router.put('/:id/read', async (req, res) => {
   } catch (err) {
     console.error('Mark read error:', err);
     res.status(500).json({ error: 'Ошибка' });
+  }
+});
+
+// ============ API настроек групп (только для групповых чатов) ============
+
+// PUT /api/chats/:id/name — обновление названия группы (только admin)
+router.put('/:id/name', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Укажите название' });
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (myUserChat?.role !== 'admin') {
+      return res.status(403).json({ error: 'Только администратор может менять название' });
+    }
+
+    const updated = await prisma.chat.update({
+      where: { id: req.params.id },
+      data: { name: name.trim() },
+    });
+    res.json(updated);
+  } catch (err) {
+    console.error('Update group name error:', err);
+    res.status(500).json({ error: 'Ошибка обновления' });
+  }
+});
+
+// POST /api/chats/:id/avatar — загрузка аватарки группы (только admin)
+router.post('/:id/avatar', (req, res, next) => {
+  uploadGroupAvatar.single('avatar')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Прикрепите файл' });
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+      return res.status(404).json({ error: 'Чат не найден' });
+    }
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (myUserChat?.role !== 'admin') {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+      return res.status(403).json({ error: 'Только администратор может менять аватар' });
+    }
+
+    const avatarPath = `/uploads/avatars/${req.file.filename}`;
+    const oldAvatar = chat.avatar;
+    if (oldAvatar) {
+      const oldPath = path.join(__dirname, '../..', oldAvatar.replace(/^\//, ''));
+      if (fs.existsSync(oldPath)) {
+        try { fs.unlinkSync(oldPath); } catch (e) { /* ignore */ }
+      }
+    }
+
+    const updated = await prisma.chat.update({
+      where: { id: req.params.id },
+      data: { avatar: avatarPath },
+    });
+    res.json(updated);
+  } catch (err) {
+    if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+    console.error('Group avatar upload error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки аватара' });
+  }
+});
+
+// POST /api/chats/:id/members — добавление участников в группу (только admin)
+router.post('/:id/members', async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'Укажите userIds (массив ID пользователей)' });
+    }
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (myUserChat?.role !== 'admin') {
+      return res.status(403).json({ error: 'Только администратор может добавлять участников' });
+    }
+
+    const existingIds = new Set(chat.userChats.map((uc) => uc.userId));
+    const toAdd = [...new Set(userIds)].filter((id) => !existingIds.has(id));
+
+    if (toAdd.length === 0) {
+      const userChats = await prisma.userChat.findMany({
+        where: { chatId: req.params.id },
+        include: { user: { select: { id: true, username: true, avatar: true, status: true } } },
+      });
+      return res.json({ userChats });
+    }
+
+    const validUsers = await prisma.user.findMany({
+      where: { id: { in: toAdd } },
+      select: { id: true },
+    });
+    const validIds = validUsers.map((u) => u.id);
+
+    await prisma.userChat.createMany({
+      data: validIds.map((userId) => ({
+        chatId: req.params.id,
+        userId,
+        role: 'member',
+      })),
+      skipDuplicates: true,
+    });
+
+    const userChats = await prisma.userChat.findMany({
+      where: { chatId: req.params.id },
+      include: { user: { select: { id: true, username: true, avatar: true, status: true } } },
+    });
+
+    res.status(201).json({ userChats });
+  } catch (err) {
+    console.error('Add members error:', err);
+    res.status(500).json({ error: 'Ошибка добавления участников' });
+  }
+});
+
+// DELETE /api/chats/:id/members/:userId — кик участника (только admin)
+router.delete('/:id/members/:userId', async (req, res) => {
+  try {
+    const { userId: targetUserId } = req.params;
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (myUserChat?.role !== 'admin') {
+      return res.status(403).json({ error: 'Только администратор может исключать участников' });
+    }
+    if (targetUserId === req.user.id) {
+      return res.status(400).json({ error: 'Используйте выход из группы для удаления себя' });
+    }
+
+    const deleted = await prisma.userChat.deleteMany({
+      where: {
+        chatId: req.params.id,
+        userId: targetUserId,
+      },
+    });
+    if (deleted.count === 0) return res.status(404).json({ error: 'Участник не найден' });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Kick member error:', err);
+    res.status(500).json({ error: 'Ошибка исключения' });
+  }
+});
+
+// DELETE /api/chats/:id/leave — выход из группы (Smart Leave: передача прав или удаление)
+router.delete('/:id/leave', async (req, res) => {
+  try {
+    const { transferToUserId, deleteChat } = req.body;
+
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    const admins = chat.userChats.filter((uc) => uc.role === 'admin');
+    const remaining = chat.userChats.filter((uc) => uc.userId !== req.user.id);
+    const isOnlyAdmin = admins.length === 1 && myUserChat?.role === 'admin';
+
+    if (isOnlyAdmin && remaining.length > 0) {
+      if (!transferToUserId && !deleteChat) {
+        return res.status(400).json({
+          error: 'Требуется передача прав или удаление группы',
+          requireTransfer: true,
+        });
+      }
+
+      if (deleteChat === true) {
+        await prisma.chat.delete({ where: { id: req.params.id } });
+        return res.json({ success: true, chatDeleted: true });
+      }
+
+      if (transferToUserId) {
+        const targetInGroup = remaining.find((uc) => uc.userId === transferToUserId);
+        if (!targetInGroup) {
+          return res.status(400).json({ error: 'Указанный пользователь не является участником группы' });
+        }
+
+        await prisma.$transaction([
+          prisma.userChat.updateMany({
+            where: { chatId: req.params.id, userId: transferToUserId },
+            data: { role: 'admin' },
+          }),
+          prisma.userChat.deleteMany({
+            where: { chatId: req.params.id, userId: req.user.id },
+          }),
+        ]);
+        return res.json({ success: true, chatDeleted: false, transferredTo: transferToUserId });
+      }
+    }
+
+    await prisma.userChat.deleteMany({
+      where: {
+        chatId: req.params.id,
+        userId: req.user.id,
+      },
+    });
+
+    if (remaining.length === 0) {
+      await prisma.chat.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, chatDeleted: true });
+    }
+
+    res.json({ success: true, chatDeleted: false });
+  } catch (err) {
+    console.error('Leave group error:', err);
+    res.status(500).json({ error: 'Ошибка выхода' });
+  }
+});
+
+// DELETE /api/chats/:id — полное удаление группы (только admin)
+router.delete('/:id', async (req, res) => {
+  try {
+    const chat = await prisma.chat.findFirst({
+      where: {
+        id: req.params.id,
+        isGroup: true,
+        userChats: { some: { userId: req.user.id } },
+      },
+      include: { userChats: true },
+    });
+    if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (myUserChat?.role !== 'admin') {
+      return res.status(403).json({ error: 'Только администратор может удалить группу' });
+    }
+
+    await prisma.chat.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete group error:', err);
+    res.status(500).json({ error: 'Ошибка удаления' });
   }
 });
 

@@ -10,8 +10,12 @@ const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MEDIA_DIR = path.join(__dirname, '../../uploads/media');
+const AVATARS_DIR = path.join(__dirname, '../../uploads/avatars');
 if (!fs.existsSync(MEDIA_DIR)) {
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
+if (!fs.existsSync(AVATARS_DIR)) {
+  fs.mkdirSync(AVATARS_DIR, { recursive: true });
 }
 
 const mediaStorage = multer.diskStorage({
@@ -34,6 +38,26 @@ const uploadMedia = multer({
     } else {
       cb(new Error('Разрешены: jpg, png, webp, mp4'));
     }
+  },
+});
+
+const channelAvatarsStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, AVATARS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const allowed = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    cb(null, `channel-${req.params.id}-${Date.now()}${safeExt}`);
+  },
+});
+
+const uploadChannelAvatar = multer({
+  storage: channelAvatarsStorage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|gif|webp)$/i;
+    if (allowed.test(file.originalname)) cb(null, true);
+    else cb(new Error('Разрешены: jpg, png, gif, webp'));
   },
 });
 
@@ -132,6 +156,9 @@ router.get('/:id', async (req, res) => {
       include: {
         creator: { select: { id: true, username: true, avatar: true } },
         _count: { select: { members: true, posts: true } },
+        members: {
+          include: { user: { select: { id: true, username: true, avatar: true } } },
+        },
       },
     });
     if (!channel) return res.status(404).json({ error: 'Канал не найден' });
@@ -167,6 +194,37 @@ router.post('/:id/subscribe', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('Subscribe error:', err);
+    res.status(500).json({ error: 'Ошибка подписки' });
+  }
+});
+
+// POST /api/channels/:id/join — самостоятельная подписка на канал
+router.post('/:id/join', async (req, res) => {
+  try {
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+
+    const existing = await prisma.channelMember.findUnique({
+      where: {
+        userId_channelId: { userId: req.user.id, channelId: req.params.id },
+      },
+    });
+
+    if (!existing) {
+      await prisma.channelMember.create({
+        data: {
+          userId: req.user.id,
+          channelId: req.params.id,
+          role: 'member',
+        },
+      });
+    }
+
+    res.json({ success: true, message: 'Вы подписались на канал' });
+  } catch (err) {
+    console.error('Join channel error:', err);
     res.status(500).json({ error: 'Ошибка подписки' });
   }
 });
@@ -261,12 +319,24 @@ router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
       postData.mediaType = getMediaType(req.file.filename);
     }
 
-    const post = await prisma.post.create({
-      data: postData,
-      include: {
-        author: { select: { id: true, username: true, avatar: true } },
-      },
-    });
+    let post;
+    try {
+      post = await prisma.post.create({
+        data: postData,
+        include: {
+          author: { select: { id: true, username: true, avatar: true } },
+        },
+      });
+    } catch (createErr) {
+      if (hasMedia && req.file?.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkErr) {
+          console.error('Failed to delete uploaded file:', unlinkErr);
+        }
+      }
+      throw createErr;
+    }
 
     const io = req.app.get('io');
     if (io) {
@@ -277,6 +347,225 @@ router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
   } catch (err) {
     console.error('Create post error:', err);
     res.status(500).json({ error: err.message || 'Ошибка публикации' });
+  }
+});
+
+// ============ API настроек каналов ============
+
+// PUT /api/channels/:id — обновление названия и описания (только creatorId)
+router.put('/:id', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+    if (channel.creatorId !== req.user.id) {
+      return res.status(403).json({ error: 'Только создатель может редактировать канал' });
+    }
+
+    const data = {};
+    if (name !== undefined) {
+      data.name = String(name).trim();
+      if (data.name) {
+        let slug = slugify(data.name);
+        const existing = await prisma.channel.findFirst({
+          where: { slug, id: { not: req.params.id } },
+        });
+        if (existing) slug = `${slug}-${Date.now().toString(36)}`;
+        data.slug = slug;
+      }
+    }
+    if (description !== undefined) data.description = description?.trim() || null;
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'Укажите name или description' });
+    }
+
+    const updated = await prisma.channel.update({
+      where: { id: req.params.id },
+      data,
+      include: {
+        creator: { select: { id: true, username: true, avatar: true } },
+      },
+    });
+    res.json(updated);
+  } catch (err) {
+    console.error('Update channel error:', err);
+    res.status(500).json({ error: 'Ошибка обновления' });
+  }
+});
+
+// POST /api/channels/:id/avatar — загрузка аватарки канала (только creatorId)
+router.post('/:id/avatar', (req, res, next) => {
+  uploadChannelAvatar.single('avatar')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Прикрепите файл' });
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!channel) {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+      return res.status(404).json({ error: 'Канал не найден' });
+    }
+    if (channel.creatorId !== req.user.id) {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+      return res.status(403).json({ error: 'Только создатель может менять аватар' });
+    }
+
+    const avatarPath = `/uploads/avatars/${req.file.filename}`;
+    const oldAvatar = channel.avatar;
+    if (oldAvatar) {
+      const oldPath = path.join(__dirname, '../..', oldAvatar.replace(/^\//, ''));
+      if (fs.existsSync(oldPath)) {
+        try { fs.unlinkSync(oldPath); } catch (e) { /* ignore */ }
+      }
+    }
+
+    const updated = await prisma.channel.update({
+      where: { id: req.params.id },
+      data: { avatar: avatarPath },
+      include: {
+        creator: { select: { id: true, username: true, avatar: true } },
+      },
+    });
+    res.json(updated);
+  } catch (err) {
+    if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ } }
+    console.error('Channel avatar upload error:', err);
+    res.status(500).json({ error: 'Ошибка загрузки аватара' });
+  }
+});
+
+// DELETE /api/channels/:id/members/:userId — удаление подписчика (только creatorId)
+router.delete('/:id/members/:userId', async (req, res) => {
+  try {
+    const { userId: targetUserId } = req.params;
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+    if (channel.creatorId !== req.user.id) {
+      return res.status(403).json({ error: 'Только создатель может исключать подписчиков' });
+    }
+    if (targetUserId === req.user.id) {
+      return res.status(400).json({ error: 'Используйте удаление канала для выхода' });
+    }
+
+    const deleted = await prisma.channelMember.deleteMany({
+      where: {
+        channelId: req.params.id,
+        userId: targetUserId,
+      },
+    });
+    if (deleted.count === 0) return res.status(404).json({ error: 'Подписчик не найден' });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Remove member error:', err);
+    res.status(500).json({ error: 'Ошибка исключения' });
+  }
+});
+
+// DELETE /api/channels/:id/leave — отписка (Smart Leave: передача прав или удаление)
+router.delete('/:id/leave', async (req, res) => {
+  try {
+    const { transferToUserId, deleteChannel } = req.body;
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+      include: { members: true },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+
+    if (channel.creatorId === req.user.id) {
+      if (!transferToUserId && !deleteChannel) {
+        return res.status(400).json({
+          error: 'Требуется передача прав или удаление канала',
+          requireTransfer: true,
+        });
+      }
+
+      if (deleteChannel === true) {
+        const oldAvatar = channel.avatar;
+        if (oldAvatar) {
+          const oldPath = path.join(__dirname, '../..', oldAvatar.replace(/^\//, ''));
+          if (fs.existsSync(oldPath)) {
+            try { fs.unlinkSync(oldPath); } catch (e) { /* ignore */ }
+          }
+        }
+        await prisma.channel.delete({ where: { id: req.params.id } });
+        return res.json({ success: true, channelDeleted: true });
+      }
+
+      if (transferToUserId) {
+        const targetMember = channel.members.find((m) => m.userId === transferToUserId);
+        if (!targetMember) {
+          return res.status(400).json({ error: 'Указанный пользователь не подписан на канал' });
+        }
+
+        await prisma.$transaction([
+          prisma.channel.update({
+            where: { id: req.params.id },
+            data: { creatorId: transferToUserId },
+          }),
+          prisma.channelMember.updateMany({
+            where: { channelId: req.params.id, userId: transferToUserId },
+            data: { role: 'admin' },
+          }),
+          prisma.channelMember.deleteMany({
+            where: { channelId: req.params.id, userId: req.user.id },
+          }),
+        ]);
+        return res.json({ success: true, channelDeleted: false, transferredTo: transferToUserId });
+      }
+    }
+
+    const deleted = await prisma.channelMember.deleteMany({
+      where: {
+        channelId: req.params.id,
+        userId: req.user.id,
+      },
+    });
+    if (deleted.count === 0) return res.status(404).json({ error: 'Вы не подписаны на этот канал' });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Leave channel error:', err);
+    res.status(500).json({ error: 'Ошибка отписки' });
+  }
+});
+
+// DELETE /api/channels/:id — полное удаление канала (только creatorId)
+router.delete('/:id', async (req, res) => {
+  try {
+    const channel = await prisma.channel.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+    if (channel.creatorId !== req.user.id) {
+      return res.status(403).json({ error: 'Только создатель может удалить канал' });
+    }
+
+    const oldAvatar = channel.avatar;
+    if (oldAvatar) {
+      const oldPath = path.join(__dirname, '../..', oldAvatar.replace(/^\//, ''));
+      if (fs.existsSync(oldPath)) {
+        try { fs.unlinkSync(oldPath); } catch (e) { /* ignore */ }
+      }
+    }
+
+    await prisma.channel.delete({ where: { id: req.params.id } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete channel error:', err);
+    res.status(500).json({ error: 'Ошибка удаления' });
   }
 });
 

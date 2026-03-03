@@ -51,6 +51,22 @@ body {
   background: rgba(148, 163, 184, 0.5);
 }
 
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.25s ease-out forwards;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;

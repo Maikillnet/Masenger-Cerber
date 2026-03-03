@@ -32,6 +32,7 @@ model User {
   createdChannels Channel[] @relation("ChannelCreator")
   channelMembers  ChannelMember[]
   postReactions   PostReaction[]
+  stories        Story[]
 }
 
 // ============ ЧАТЫ (личные и групповые) ============
@@ -86,6 +87,10 @@ model Message {
   sender   User   @relation(fields: [senderId], references: [id], onDelete: Cascade)
   chatId   String
   chat     Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  replyToId String?
+  replyTo   Message?  @relation("Replies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[] @relation("Replies")
 
   reactions Reaction[]
   pinnedInChats Chat[] @relation("PinnedMessage")
@@ -204,4 +209,20 @@ model Comment {
 
   @@index([postId])
   @@index([authorId])
+}
+
+// ============ ИСТОРИИ (Stories) ============
+model Story {
+  id        String   @id @default(uuid())
+  mediaUrl  String
+  mediaType String   // 'image' или 'video'
+  createdAt DateTime @default(now())
+  expiresAt DateTime // createdAt + 24 часа
+  views     Int      @default(0)
+
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([authorId])
+  @@index([expiresAt])
 }

@@ -33,6 +33,24 @@ export function setupSocket(io) {
       socket.leave(`channel:${channelId}`);
     });
 
+    socket.on('join_chat', (chatId) => {
+      if (chatId) socket.join(`chat:${chatId}`);
+    });
+
+    socket.on('leave_chat', (chatId) => {
+      if (chatId) socket.leave(`chat:${chatId}`);
+    });
+
+    socket.on('typing_start', ({ chatId }) => {
+      if (!chatId) return;
+      socket.to(`chat:${chatId}`).emit('typing_start', { chatId, userId });
+    });
+
+    socket.on('typing_end', ({ chatId }) => {
+      if (!chatId) return;
+      socket.to(`chat:${chatId}`).emit('typing_end', { chatId, userId });
+    });
+
     // mark_as_read — отметить сообщения чата как прочитанные (логика как в Telegram)
     socket.on('mark_as_read', async ({ chatId }) => {
       if (!chatId || !userId) return;
@@ -42,21 +60,33 @@ export function setupSocket(io) {
             id: chatId,
             userChats: { some: { userId } },
           },
-          include: { userChats: { select: { userId: true } } },
+          include: { userChats: true },
         });
         if (!chat) return;
 
-        await prisma.message.updateMany({
-          where: {
-            chatId,
-            senderId: { not: userId },
-            isRead: false,
-          },
-          data: { isRead: true },
+        const now = new Date();
+        await prisma.userChat.updateMany({
+          where: { chatId, userId },
+          data: { lastReadAt: now },
         });
 
-        const participantIds = chat.userChats.map((uc) => uc.userId);
-        participantIds.forEach((id) => io.to(id).emit('messages_read', { chatId }));
+        if (chat.isGroup) {
+          const participantIds = chat.userChats.map((uc) => uc.userId);
+          participantIds.forEach((id) =>
+            io.to(id).emit('messages_read', { chatId, readBy: userId, readAt: now.toISOString() })
+          );
+        } else {
+          await prisma.message.updateMany({
+            where: {
+              chatId,
+              senderId: { not: userId },
+              isRead: false,
+            },
+            data: { isRead: true },
+          });
+          const participantIds = chat.userChats.map((uc) => uc.userId);
+          participantIds.forEach((id) => io.to(id).emit('messages_read', { chatId }));
+        }
       } catch (err) {
         console.error('mark_as_read error:', err);
       }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft } from 'lucide-react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings } from 'lucide-react';
 import {
   getChannel,
   getChannelPosts,
@@ -8,7 +8,9 @@ import {
   reactToPost,
   getPostComments,
   addComment,
+  joinChannel,
 } from '../api';
+import ChannelSettingsModal from '../components/ChannelSettingsModal';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
@@ -181,6 +183,7 @@ function CommentThread({ post, onClose, socket }) {
 
 export default function ChannelViewPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const socket = useSocket();
   const [channel, setChannel] = useState(null);
@@ -191,7 +194,11 @@ export default function ChannelViewPage() {
   const [loading, setLoading] = useState(true);
   const [commentPost, setCommentPost] = useState(null);
   const [muted, setMuted] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [joining, setJoining] = useState(false);
   const fileInputRef = useRef(null);
+
+  const isMember = channel?.isMember ?? false;
 
   useEffect(() => {
     if (!id) return;
@@ -306,11 +313,31 @@ export default function ChannelViewPage() {
 
   return (
     <div className={`flex h-screen overflow-hidden ${commentPost ? 'comments-open' : ''}`}>
+      {showSettings && (
+        <ChannelSettingsModal
+          data={channel}
+          currentUser={user}
+          onClose={(opts) => {
+            setShowSettings(false);
+            if (opts?.left || opts?.deleted) navigate('/channels');
+          }}
+          onUpdate={(updated) => setChannel((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
+        />
+      )}
       <div className="flex-1 flex flex-col min-w-0 bg-white/5 backdrop-blur-md border-r border-white/10 shadow-2xl">
         <header className="flex-shrink-0 p-4 border-b border-white/10">
-          <Link to="/channels" className="inline-flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 mb-2">
-            <ArrowLeft size={16} /> Каналы
-          </Link>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <Link to="/channels" className="inline-flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300">
+              <ArrowLeft size={16} /> Каналы
+            </Link>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
+              title="Настройки канала"
+            >
+              <Settings size={20} />
+            </button>
+          </div>
           <h1 className="text-xl font-semibold text-gray-100">{channel.name}</h1>
           {channel.description && (
             <p className="text-sm text-gray-500 mt-1">{channel.description}</p>
@@ -338,7 +365,26 @@ export default function ChannelViewPage() {
         </div>
 
         <div className="flex-shrink-0 p-4 pb-6 md:pb-8">
-          {isAdmin ? (
+          {!isMember ? (
+            <button
+              type="button"
+              onClick={async () => {
+                setJoining(true);
+                try {
+                  await joinChannel(id);
+                  setChannel((prev) => (prev ? { ...prev, isMember: true } : prev));
+                } catch (e) {
+                  console.error(e);
+                } finally {
+                  setJoining(false);
+                }
+              }}
+              disabled={joining}
+              className="w-full py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {joining ? 'Подписка...' : 'Подписаться на канал'}
+            </button>
+          ) : isAdmin ? (
             <form onSubmit={handleCreatePost} className="flex flex-col gap-3">
               {mediaPreview && (
                 <div className="relative inline-block ml-2">

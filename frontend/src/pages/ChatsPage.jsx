@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, Menu, Check, CheckCheck } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -8,11 +8,17 @@ import {
   createGroupChat,
   getMessages,
   sendMessage,
+  editMessage,
+  deleteMessage,
   markChatRead,
   getUsers,
   pinMessage,
   unpinMessage,
+  getStoryFeed,
+  uploadStory,
 } from '../api';
+import GroupSettingsModal from '../components/GroupSettingsModal';
+import StoryViewer from '../components/StoryViewer';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
@@ -25,15 +31,20 @@ function formatTime(date) {
   return d.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' });
 }
 
-function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery }) {
-  const filtered = searchQuery.trim()
-    ? chats.filter((chat) => {
-        const name = chat.otherUser?.username || chat.name || '';
-        const preview = chat.lastMessage?.text || '';
-        const q = searchQuery.toLowerCase();
-        return name.toLowerCase().includes(q) || preview.toLowerCase().includes(q);
-      })
-    : chats;
+function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFilter }) {
+  let filtered = chatFilter === 'personal'
+    ? chats.filter((c) => !c.isGroup)
+    : chatFilter === 'group'
+      ? chats.filter((c) => c.isGroup)
+      : chats;
+  if (searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    filtered = filtered.filter((chat) => {
+      const name = chat.otherUser?.username || chat.name || '';
+      const preview = chat.lastMessage?.text || '';
+      return name.toLowerCase().includes(q) || preview.toLowerCase().includes(q);
+    });
+  }
 
   const sorted = [...filtered].sort((a, b) => {
     const timeA = a.lastMessage?.createdAt || a.updatedAt || 0;
@@ -41,17 +52,23 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery }) {
     return new Date(timeB) - new Date(timeA);
   });
 
+  const emptyMessage = searchQuery.trim()
+    ? 'Ничего не найдено'
+    : chatFilter === 'personal'
+      ? 'Нет личных чатов. Начните новый диалог.'
+      : chatFilter === 'group'
+        ? 'Нет групповых чатов. Создайте группу.'
+        : 'Нет чатов. Начните новый диалог.';
+
   return (
     <div className="flex-1 overflow-y-auto">
       {sorted.length === 0 ? (
-        <p className="p-8 text-center text-gray-500">
-          {searchQuery.trim() ? 'Ничего не найдено' : 'Нет чатов. Начните новый диалог.'}
-        </p>
+        <p className="p-8 text-center text-gray-500">{emptyMessage}</p>
       ) : (
         sorted.map((chat) => {
           const other = chat.otherUser;
           const name = other?.username || chat.name || 'Чат';
-          const avatar = other?.avatar;
+          const avatar = other?.avatar || chat.avatar;
           const status = userStatus[other?.id] ?? other?.status ?? 'offline';
           return (
             <button
@@ -99,16 +116,37 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery }) {
   );
 }
 
-function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onUnpin, userStatus }) {
+function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onCloseSettings }) {
   const [text, setText] = useState('');
   const [mediaFile, setMediaFile] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [mediaPreview, setMediaPreview] = useState(null); // { url, type: 'image'|'video' }
   const messagesEndRef = useRef(null);
   const messageRefs = useRef({});
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const [menuMsg, setMenuMsg] = useState(null);
+  const [replyTo, setReplyTo] = useState(null);
+  const [editingMsg, setEditingMsg] = useState(null);
+  const typingEndTimerRef = useRef(null);
+  const loadMoreRef = useRef(null);
   const { user } = useAuth();
+
+  const messagesContainerRef = useRef(null);
+  useEffect(() => {
+    if (!onLoadMore || !hasMore || loading || loadingMore) return;
+    const sentinel = loadMoreRef.current;
+    const container = messagesContainerRef.current;
+    if (!sentinel || !container) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) onLoadMore();
+      },
+      { threshold: 0, root: container, rootMargin: '100px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [onLoadMore, hasMore, loading, loadingMore, messages.length]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -125,11 +163,32 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
     ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
   }, [text]);
 
+  const handleTextChange = (e) => {
+    const val = e.target.value;
+    setText(val);
+    if (!socket || !chat?.id) return;
+    socket.emit('typing_start', { chatId: chat.id });
+    if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
+    typingEndTimerRef.current = setTimeout(() => {
+      socket.emit('typing_end', { chatId: chat.id });
+      typingEndTimerRef.current = null;
+    }, 2000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
+    };
+  }, []);
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!text.trim() && !mediaFile) return;
-    onSend(text.trim(), mediaFile);
+    if (socket && chat?.id) socket.emit('typing_end', { chatId: chat.id });
+    if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
+    onSend(text.trim(), mediaFile, replyTo?.id);
     setText('');
+    setReplyTo(null);
     clearMedia();
   };
 
@@ -187,16 +246,18 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
 
   const name = chat.otherUser?.username || chat.name || 'Чат';
   const avatar = chat.otherUser?.avatar;
-  const status = chat.isGroup
-    ? `${chat.participantCount ?? 0} участников`
-    : (userStatus[chat.otherUser?.id] === 'online' ? 'в сети' : 'не в сети');
+  const status = typingUser
+    ? 'Печатает...'
+    : chat.isGroup
+      ? `${chat.participantCount ?? 0} участников`
+      : (userStatus[chat.otherUser?.id] === 'online' ? 'в сети' : 'не в сети');
 
   return (
     <div className="flex-1 flex flex-col bg-white/5 backdrop-blur-md border-l border-white/10 shadow-2xl min-w-0">
       <header className="flex-shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/5">
         <div className="w-10 h-10 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden flex-shrink-0">
-          {avatar ? (
-            <img src={avatar} alt="" className="w-full h-full object-cover" />
+          {(avatar || chat.avatar) ? (
+            <img src={avatar || chat.avatar} alt="" className="w-full h-full object-cover" />
           ) : (
             <span className="text-white font-medium">{name[0]?.toUpperCase() || '?'}</span>
           )}
@@ -205,6 +266,15 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
           <div className="font-medium text-gray-100 truncate">{name}</div>
           <div className="text-sm text-gray-500 truncate">{status}</div>
         </div>
+        {chat.isGroup && (
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
+            title="Настройки группы"
+          >
+            <Settings size={20} />
+          </button>
+        )}
       </header>
 
       {pinnedMessage && (
@@ -220,11 +290,21 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
         </button>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-8 md:pb-10 space-y-3 flex flex-col">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 pb-8 md:pb-10 space-y-3 flex flex-col">
         {loading ? (
           <div className="flex-1 flex items-center justify-center text-gray-500">Загрузка...</div>
         ) : (
-          messages.map((msg) => {
+          <>
+            {hasMore && (
+              <div ref={loadMoreRef} className="flex justify-center py-2">
+                {loadingMore ? (
+                  <span className="text-sm text-gray-500">Загрузка...</span>
+                ) : (
+                  <span className="text-sm text-gray-500">↑ Подгрузить ещё</span>
+                )}
+              </div>
+            )}
+            {messages.map((msg) => {
             const isOwn = msg.senderId === user?.id;
             return (
               <div
@@ -241,18 +321,29 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
                       : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm'
                   }`}
                 >
-                  {msg.mediaUrl && msg.mediaType === 'image' && (
+                  {msg.replyTo && (
+                    <div className={`mb-2 pl-2 border-l-2 ${isOwn ? 'border-blue-300/50' : 'border-white/30'}`}>
+                      <span className="text-xs font-medium opacity-80">{msg.replyTo.sender?.username}</span>
+                      <p className="text-sm truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : msg.replyTo.text}</p>
+                    </div>
+                  )}
+                  {msg.mediaUrl && msg.mediaType === 'image' && !msg.isDeleted && (
                     <img src={msg.mediaUrl} alt="" className="rounded-lg max-h-64 object-cover mb-2" />
                   )}
-                  {msg.mediaUrl && msg.mediaType === 'video' && (
+                  {msg.mediaUrl && msg.mediaType === 'video' && !msg.isDeleted && (
                     <video src={msg.mediaUrl} controls className="rounded-lg max-h-64 mb-2" />
                   )}
-                  {msg.text && <div className="whitespace-pre-wrap break-words">{msg.text}</div>}
+                  {msg.isDeleted ? (
+                    <div className="italic opacity-70">Сообщение удалено</div>
+                  ) : (
+                    msg.text && <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+                  )}
                   <div className={`flex justify-end items-center gap-1 mt-1 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
                     <span>
                       {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                      {msg.editedAt && ' (изм.)'}
                     </span>
-                    {isOwn && (
+                    {isOwn && !msg.isDeleted && (
                       msg.isRead ? (
                         <CheckCheck className="w-4 h-4 text-blue-400 flex-shrink-0" />
                       ) : (
@@ -263,7 +354,8 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
                 </div>
               </div>
             );
-          })
+          })}
+          </>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -274,10 +366,32 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
           onClick={() => setMenuMsg(null)}
         >
           <div
-            className="absolute bg-white/10 backdrop-blur-md border border-white/10 rounded-xl px-2 py-1 shadow-2xl min-w-[140px]"
+            className="absolute bg-white/10 backdrop-blur-md border border-white/10 rounded-xl px-2 py-1 shadow-2xl min-w-[160px]"
             onClick={(e) => e.stopPropagation()}
             style={{ left: menuMsg.x, top: menuMsg.y }}
           >
+            <button
+              className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+              onClick={() => { setReplyTo(menuMsg.msg); setMenuMsg(null); }}
+            >
+              Ответить
+            </button>
+            {menuMsg.msg?.senderId === user?.id && !menuMsg.msg?.isDeleted && (
+              <>
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+                  onClick={() => { setEditingMsg(menuMsg.msg); setMenuMsg(null); }}
+                >
+                  Редактировать
+                </button>
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-white/10 rounded-lg transition-colors"
+                  onClick={() => { onDelete(menuMsg.msg?.id); setMenuMsg(null); }}
+                >
+                  Удалить
+                </button>
+              </>
+            )}
             {pinnedMessage?.id === menuMsg.msg?.id ? (
               <button
                 className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
@@ -294,6 +408,58 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <GroupSettingsModal
+          data={chat}
+          currentUser={user}
+          userStatus={userStatus}
+          onClose={(opts) => {
+            setShowSettings(false);
+            if (opts?.left || opts?.deleted) onCloseSettings?.(opts);
+          }}
+          onUpdate={(updated) => {
+            onUpdateChat?.(updated);
+          }}
+        />
+      )}
+
+      {editingMsg && (
+        <div className="flex-shrink-0 mx-4 mb-2 p-3 rounded-xl bg-white/10 border border-white/10 flex items-center gap-2">
+          <span className="text-sm text-gray-500">Редактирование:</span>
+          <input
+            type="text"
+            defaultValue={editingMsg.text}
+            className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white text-sm"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const val = e.target.value.trim();
+                if (val) onEdit(editingMsg.id, val);
+                setEditingMsg(null);
+              }
+              if (e.key === 'Escape') setEditingMsg(null);
+            }}
+            autoFocus
+          />
+          <button
+            type="button"
+            className="text-gray-400 hover:text-white text-sm"
+            onClick={() => setEditingMsg(null)}
+          >
+            Отмена
+          </button>
+        </div>
+      )}
+
+      {replyTo && (
+        <div className="flex-shrink-0 mx-4 mb-2 p-3 rounded-xl bg-white/10 border-l-4 border-blue-500/50 flex items-center justify-between">
+          <div className="min-w-0">
+            <span className="text-xs text-blue-400 font-medium">{replyTo.sender?.username}</span>
+            <p className="text-sm text-gray-300 truncate">{replyTo.isDeleted ? 'Сообщение удалено' : replyTo.text}</p>
+          </div>
+          <button type="button" className="text-gray-400 hover:text-white ml-2" onClick={() => setReplyTo(null)}>×</button>
         </div>
       )}
 
@@ -334,7 +500,7 @@ function ChatWindow({ chat, messages, onSend, loading, pinnedMessage, onPin, onU
           <textarea
             ref={textareaRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             placeholder="Сообщение..."
             maxLength={2000}
@@ -370,18 +536,15 @@ export default function ChatsPage() {
   const [users, setUsers] = useState([]);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [burgerOpen, setBurgerOpen] = useState(false);
-  const burgerRef = useRef(null);
+  const [chatFilter, setChatFilter] = useState('personal'); // 'personal' | 'group'
+  const [typingUser, setTypingUser] = useState(null);
+  const [storyFeed, setStoryFeed] = useState([]);
+  const storyFileInputRef = useRef(null);
+  const [storyViewer, setStoryViewer] = useState(null); // { initialUserIndex }
 
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (burgerRef.current && !burgerRef.current.contains(e.target)) {
-        setBurgerOpen(false);
-      }
-    };
-    if (burgerOpen) document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [burgerOpen]);
+  const loadStoryFeed = () => {
+    getStoryFeed().then(setStoryFeed).catch(console.error);
+  };
 
   const loadChats = () => {
     getChats().then((data) => {
@@ -399,6 +562,22 @@ export default function ChatsPage() {
   useEffect(() => {
     loadChats();
   }, []);
+
+  useEffect(() => {
+    loadStoryFeed();
+  }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+    if (selectedChat) socket.emit('join_chat', selectedChat.id);
+    return () => {
+      if (selectedChat) socket.emit('leave_chat', selectedChat.id);
+    };
+  }, [socket, selectedChat?.id]);
+
+  useEffect(() => {
+    if (!selectedChat) setTypingUser(null);
+  }, [selectedChat?.id]);
 
   useEffect(() => {
     if (!socket) return;
@@ -439,28 +618,67 @@ export default function ChatsPage() {
         c?.id === chatId ? { ...c, pinnedMessage: pinned ? message : null } : c
       );
     });
-    socket.on('messages_read', ({ chatId }) => {
+    socket.on('messages_read', ({ chatId, readBy, readAt }) => {
       setMessages((prev) =>
-        prev.map((m) =>
-          m.chatId === chatId ? { ...m, isRead: true } : m
-        )
+        prev.map((m) => {
+          if (m.chatId !== chatId) return m;
+          if (readAt && readBy !== user?.id) {
+            const msgTime = new Date(m.createdAt).getTime();
+            const readTime = new Date(readAt).getTime();
+            if (m.senderId === user?.id && msgTime <= readTime) return { ...m, isRead: true };
+          }
+          if (!readAt) return { ...m, isRead: true };
+          return m;
+        })
       );
+    });
+    socket.on('typing_start', ({ chatId, userId }) => {
+      if (chatId === selectedChat?.id && userId !== user?.id) setTypingUser(userId);
+    });
+    socket.on('typing_end', ({ chatId }) => {
+      if (chatId === selectedChat?.id) setTypingUser(null);
+    });
+    socket.on('message_edited', (updated) => {
+      if (updated.chatId === selectedChat?.id) {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      }
+    });
+    socket.on('message_deleted', (updated) => {
+      if (updated.chatId === selectedChat?.id) {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      }
+    });
+    socket.on('new_story', () => {
+      getStoryFeed().then(setStoryFeed).catch(console.error);
     });
     return () => {
       socket.off('receive_message');
       socket.off('user_status');
       socket.off('message_pinned');
       socket.off('messages_read');
+      socket.off('typing_start');
+      socket.off('typing_end');
+      socket.off('message_edited');
+      socket.off('message_deleted');
+      socket.off('new_story');
     };
-  }, [socket, selectedChat?.id]);
+  }, [socket, selectedChat?.id, user?.id]);
+
+  const [messagesNextCursor, setMessagesNextCursor] = useState(null);
+  const [messagesHasMore, setMessagesHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const selectChat = (chat) => {
     setSelectedChat(chat);
     setMessagesLoading(true);
+    setMessagesNextCursor(null);
+    setMessagesHasMore(false);
     Promise.all([getChat(chat.id), getMessages(chat.id)])
-      .then(([fullChat, msgs]) => {
+      .then(([fullChat, data]) => {
         setSelectedChat((c) => (c?.id === chat.id ? { ...chat, ...fullChat } : c));
-        setMessages(msgs);
+        setMessages(data.messages || data);
+        setMessagesNextCursor(data.nextCursor || null);
+        setMessagesHasMore(data.hasMore || false);
         markChatRead(chat.id);
         if (socket) socket.emit('mark_as_read', { chatId: chat.id });
       })
@@ -472,6 +690,20 @@ export default function ChatsPage() {
     );
   };
 
+  const loadMoreMessages = () => {
+    if (!selectedChat || !messagesNextCursor || loadingMore) return;
+    setLoadingMore(true);
+    getMessages(selectedChat.id, messagesNextCursor)
+      .then((data) => {
+        const newMsgs = data.messages || [];
+        setMessages((prev) => [...newMsgs, ...prev]);
+        setMessagesNextCursor(data.nextCursor || null);
+        setMessagesHasMore(data.hasMore || false);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingMore(false));
+  };
+
   const handlePin = (messageId) => {
     if (!selectedChat) return;
     pinMessage(selectedChat.id, messageId)
@@ -480,6 +712,24 @@ export default function ChatsPage() {
         setChats((prev) =>
           prev.map((c) => (c.id === selectedChat.id ? { ...c, pinnedMessage: pm } : c))
         );
+      })
+      .catch(console.error);
+  };
+
+  const handleEditMessage = (messageId, text) => {
+    if (!selectedChat) return;
+    editMessage(selectedChat.id, messageId, text)
+      .then((updated) => {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      })
+      .catch(console.error);
+  };
+
+  const handleDeleteMessage = (messageId) => {
+    if (!selectedChat) return;
+    deleteMessage(selectedChat.id, messageId)
+      .then((updated) => {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
       })
       .catch(console.error);
   };
@@ -496,12 +746,15 @@ export default function ChatsPage() {
       .catch(console.error);
   };
 
-  const handleSendMessage = (text, mediaFile = null) => {
+  const handleSendMessage = (text, mediaFile = null, replyToId = null) => {
     if (!selectedChat) return;
     if (!text?.trim() && !mediaFile) return;
-    sendMessage(selectedChat.id, text, mediaFile)
+    sendMessage(selectedChat.id, text, mediaFile, replyToId)
       .then((msg) => {
-        setMessages((prev) => [...prev, msg]);
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
       })
       .catch(console.error);
   };
@@ -557,24 +810,24 @@ export default function ChatsPage() {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {storyViewer !== null && storyFeed.length > 0 && (
+        <StoryViewer
+          users={storyFeed}
+          initialUserIndex={storyViewer.initialUserIndex}
+          onClose={() => setStoryViewer(null)}
+        />
+      )}
       <aside className="w-[30%] min-w-[260px] max-w-[400px] flex flex-col bg-white/5 backdrop-blur-md border-r border-white/10 shadow-2xl">
-        <header className="flex-shrink-0 p-3 border-b border-white/10 flex flex-col gap-2">
-          <div className="flex items-center gap-2 relative" ref={burgerRef}>
-            <button
+        <header className="flex-shrink-0 p-3 border-b border-white/10 flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <Link
+              to="/cabinet"
               className="flex items-center justify-center w-10 h-10 rounded-lg bg-black/40 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-gray-200 transition-all flex-shrink-0"
-              onClick={(e) => { e.stopPropagation(); setBurgerOpen((o) => !o); }}
-              title="Меню"
-              aria-label="Меню"
+              title="Профиль"
+              aria-label="Профиль"
             >
-              <Menu size={20} />
-            </button>
-            {burgerOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white/10 backdrop-blur-md border border-white/10 rounded-xl py-1 min-w-[160px] shadow-2xl z-50">
-                <Link to="/cabinet" onClick={() => setBurgerOpen(false)} className="block px-4 py-2 text-sm text-gray-200 hover:bg-white/10">Профиль</Link>
-                <Link to="/channels" onClick={() => setBurgerOpen(false)} className="block px-4 py-2 text-sm text-gray-200 hover:bg-white/10">Каналы</Link>
-                <button onClick={() => { openNewChat(); setBurgerOpen(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-white/10">Новый чат</button>
-              </div>
-            )}
+              <User size={20} />
+            </Link>
             <input
               type="search"
               placeholder="Поиск..."
@@ -583,9 +836,104 @@ export default function ChatsPage() {
               className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all text-sm"
             />
           </div>
-          <div className="flex justify-end">
+
+          <div className="flex items-center gap-3 px-3 py-4 overflow-x-auto no-scrollbar border-b border-white/5 -mx-3 -mb-3">
             <button
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 hover:scale-105 transition-all duration-300 border border-blue-500/30"
+              type="button"
+              onClick={() => {
+                const myIdx = storyFeed.findIndex((u) => u.id === user?.id);
+                if (myIdx >= 0) {
+                  setStoryViewer({ initialUserIndex: myIdx });
+                } else {
+                  storyFileInputRef.current?.click();
+                }
+              }}
+              className="flex-shrink-0 flex flex-col items-center gap-1.5 cursor-pointer group"
+            >
+              <div className="relative w-14 h-14 rounded-full overflow-hidden">
+                <div className="w-full h-full bg-blue-500/30 flex items-center justify-center border-2 border-slate-900">
+                  {user?.avatar ? (
+                    <img src={user.avatar} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-white font-medium text-lg">{user?.username?.[0]?.toUpperCase() || '?'}</span>
+                  )}
+                </div>
+                <div className="absolute bottom-0 right-0 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center border-2 border-slate-900">
+                  <Plus size={12} strokeWidth={2.5} className="text-white" />
+                </div>
+              </div>
+              <span className="text-xs text-gray-500 truncate max-w-[56px]">Моя история</span>
+            </button>
+            <input
+              ref={storyFileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,video/mp4"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                uploadStory(file)
+                  .then(() => loadStoryFeed())
+                  .catch((err) => alert(err.message || 'Ошибка загрузки'))
+                  .finally(() => { e.target.value = ''; });
+              }}
+            />
+            {storyFeed.filter((u) => u.id !== user?.id).map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                onClick={() => {
+                  const idx = storyFeed.findIndex((x) => x.id === u.id);
+                  if (idx >= 0) setStoryViewer({ initialUserIndex: idx });
+                }}
+                className="flex-shrink-0 flex flex-col items-center gap-1.5 cursor-pointer"
+              >
+                <div className="p-[2px] bg-gradient-to-tr from-blue-500 to-purple-500 rounded-full">
+                  <div className="w-14 h-14 rounded-full overflow-hidden border-2 border-slate-900 bg-slate-900">
+                    {u.avatar ? (
+                      <img src={u.avatar} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="w-full h-full flex items-center justify-center text-gray-400 font-medium text-lg">
+                        {u.username?.[0]?.toUpperCase() || '?'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className="text-xs text-gray-500 truncate max-w-[56px]">{u.username || 'Пользователь'}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1 flex-1 overflow-x-auto no-scrollbar min-w-0">
+            <button
+              onClick={() => setChatFilter('personal')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
+                chatFilter === 'personal'
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+              }`}
+            >
+              Личные
+            </button>
+            <button
+              onClick={() => setChatFilter('group')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
+                chatFilter === 'group'
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+              }`}
+            >
+              Группы
+            </button>
+            <Link
+              to="/channels"
+              className="px-3 py-1.5 text-sm font-medium rounded-xl text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-all flex-shrink-0"
+            >
+              Каналы
+            </Link>
+            <div className="flex-1 min-w-2" />
+            <button
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 hover:scale-105 transition-all duration-300 border border-blue-500/30 flex-shrink-0"
               onClick={openNewChat}
               title="Новый чат"
             >
@@ -599,6 +947,7 @@ export default function ChatsPage() {
           onSelect={selectChat}
           userStatus={userStatus}
           searchQuery={searchQuery}
+          chatFilter={chatFilter}
         />
       </aside>
 
@@ -607,11 +956,25 @@ export default function ChatsPage() {
           chat={selectedChat}
           messages={messages}
           onSend={handleSendMessage}
+          onEdit={handleEditMessage}
+          onDelete={handleDeleteMessage}
           loading={messagesLoading}
+          loadingMore={loadingMore}
+          hasMore={messagesHasMore}
+          onLoadMore={loadMoreMessages}
           pinnedMessage={selectedChat?.pinnedMessage}
           onPin={handlePin}
           onUnpin={handleUnpin}
           userStatus={userStatus}
+          typingUser={typingUser}
+          socket={socket}
+          onUpdateChat={(updated) => setSelectedChat((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
+          onCloseSettings={(opts) => {
+            if (opts?.left || opts?.deleted) {
+              setSelectedChat(null);
+              getChats().then(setChats);
+            }
+          }}
         />
       </main>
 
