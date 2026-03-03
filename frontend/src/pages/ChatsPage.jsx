@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X, ChevronLeft, ChevronRight, MessageCircle, Eye } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -18,14 +18,40 @@ import {
   removeMessageReaction,
   getStoryFeed,
   uploadStory,
+  getChannels,
+  getChannel,
+  getChannelPosts,
+  createPost,
+  createChannel,
+  joinChannel,
+  getPostComments,
+  addComment,
+  reactToPost,
 } from '../api';
+
+import { REACTION_EMOJIS } from '../constants/emojis';
+
 import GroupSettingsModal from '../components/GroupSettingsModal';
+import ChannelSettingsModal from '../components/ChannelSettingsModal';
 import MediaPicker from '../components/MediaPicker';
 import StoryViewer from '../components/StoryViewer';
 import StoryPreviewModal from '../components/StoryPreviewModal';
 import StoryRing from '../components/StoryRing';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
+
+function formatCommentCount(n) {
+  const x = n ?? 0;
+  if (x % 10 === 1 && x % 100 !== 11) return `${x} комментарий`;
+  if ([2, 3, 4].includes(x % 10) && ![12, 13, 14].includes(x % 100)) return `${x} комментария`;
+  return `${x} комментариев`;
+}
+
+function formatViews(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n ?? 0);
+}
 
 function formatTime(date) {
   const d = new Date(date);
@@ -36,18 +62,25 @@ function formatTime(date) {
   return d.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' });
 }
 
-function MediaGrid({ urls, types, className = '' }) {
+function MediaGrid({ urls, types, className = '', onMediaClick }) {
   const items = (urls || []).map((url, i) => ({ url, type: (types || [])[i] || 'image' }));
   const mediaItems = items.filter((it) => it.type === 'image' || it.type === 'video');
   if (mediaItems.length === 0) return null;
 
   const renderCell = (item, idx, cellClass = '') => (
-    <div key={idx} className={`relative overflow-hidden bg-black/10 ${cellClass}`}>
+    <div
+      key={idx}
+      role="button"
+      tabIndex={0}
+      onClick={() => onMediaClick?.(idx)}
+      onKeyDown={(e) => e.key === 'Enter' && onMediaClick?.(idx)}
+      className={`relative overflow-hidden bg-black/10 cursor-pointer hover:opacity-90 transition-opacity ${cellClass}`}
+    >
       {item.type === 'image' ? (
         <img src={item.url} alt="" className="w-full h-full object-cover" />
       ) : (
         <>
-          <video src={item.url} controls className="w-full h-full object-cover" />
+          <video src={item.url} controls className="w-full h-full object-cover" onClick={(e) => e.stopPropagation()} />
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center">
               <Play className="w-6 h-6 text-white fill-white" />
@@ -62,7 +95,13 @@ function MediaGrid({ urls, types, className = '' }) {
     const item = mediaItems[0];
     const isImage = item.type === 'image';
     return (
-      <div className={`rounded-2xl overflow-hidden ${className}`}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onMediaClick?.(0)}
+        onKeyDown={(e) => e.key === 'Enter' && onMediaClick?.(0)}
+        className={`rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity ${className}`}
+      >
         <div className="relative w-full bg-black/20 flex items-center justify-center overflow-hidden min-h-[200px]">
           {isImage && (
             <div
@@ -75,10 +114,10 @@ function MediaGrid({ urls, types, className = '' }) {
             />
           )}
           {isImage ? (
-            <img src={item.url} alt="" className="relative z-10 max-w-full h-auto max-h-[500px] object-contain shadow-xl" />
+            <img src={item.url} alt="" className="relative z-10 max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
           ) : (
-            <div className="relative z-10 max-h-[500px]">
-              <video src={item.url} controls className="max-w-full h-auto max-h-[500px] object-contain shadow-xl" />
+            <div className="relative z-10 max-h-[450px]" onClick={(e) => e.stopPropagation()}>
+              <video src={item.url} controls className="max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
                   <Play className="w-8 h-8 text-white fill-white" />
@@ -144,6 +183,7 @@ function MediaGrid({ urls, types, className = '' }) {
 }
 
 function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFilter }) {
+  if (chatFilter === 'channels') return null;
   let filtered = chatFilter === 'personal'
     ? chats.filter((c) => !c.isGroup)
     : chatFilter === 'group'
@@ -178,9 +218,9 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
         <p className="p-8 text-center text-gray-500">{emptyMessage}</p>
       ) : (
         sorted.map((chat) => {
-          const other = chat.otherUser;
-          const name = other?.username || chat.name || 'Чат';
-          const avatar = other?.avatar || chat.avatar;
+          const other = chat?.otherUser;
+          const name = other?.username || chat?.name || 'Чат';
+          const avatar = other?.avatar ?? chat?.avatar;
           const status = userStatus[other?.id] ?? other?.status ?? 'offline';
           return (
             <button
@@ -229,7 +269,142 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
   );
 }
 
-function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onCloseSettings }) {
+function ChannelList({ channels, selectedId, onSelect, searchQuery }) {
+  let filtered = channels;
+  if (searchQuery.trim()) {
+    const q = searchQuery.toLowerCase();
+    filtered = channels.filter((ch) => {
+      const name = ch.name || '';
+      const desc = ch.description || '';
+      return name.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
+    });
+  }
+  const sorted = [...filtered].sort((a, b) => {
+    const ta = a.updatedAt || a.createdAt || 0;
+    const tb = b.updatedAt || b.createdAt || 0;
+    return new Date(tb) - new Date(ta);
+  });
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {sorted.length === 0 ? (
+        <p className="p-8 text-center text-gray-500">Нет каналов</p>
+      ) : (
+        sorted.filter((ch) => ch?.id).map((ch) => (
+          <button
+            key={ch.id}
+            className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all duration-200 border-b border-white/5 hover:bg-white/5 ${
+              selectedId === ch.id ? 'bg-white/10' : ''
+            }`}
+            onClick={() => onSelect(ch)}
+          >
+            <div className="flex-shrink-0 w-12 h-12 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden">
+              {ch?.avatar ? (
+                <img src={ch.avatar} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <span className="text-white font-medium">{(ch?.name ?? '?')[0]?.toUpperCase() || '?'}</span>
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="font-medium text-gray-100 truncate block">{ch.name}</span>
+              <span className="text-sm text-gray-500 truncate block">
+                {ch._count?.members ?? 0} подписчиков
+              </span>
+            </div>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
+function PostCommentsInline({ post, socket, onClose }) {
+  const [comments, setComments] = useState([]);
+  const [text, setText] = useState('');
+  const [loading, setLoading] = useState(true);
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    getPostComments(post.id)
+      .then(setComments)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [post.id]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const handler = ({ postId, comment }) => {
+      if (postId !== post.id || !comment) return;
+      setComments((prev) => {
+        if (prev.some((c) => c.id === comment.id)) return prev;
+        return [...prev, comment];
+      });
+    };
+    socket.on('new_comment', handler);
+    return () => socket.off('new_comment', handler);
+  }, [socket, post.id]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [comments]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    addComment(post.id, text.trim())
+      .then((c) => {
+        if (!c?.id) return;
+        setComments((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
+      })
+      .catch(console.error);
+    setText('');
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-white/10">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-gray-300">Комментарии</span>
+        <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-sm">Свернуть</button>
+      </div>
+      <div className="max-h-48 overflow-y-auto space-y-3 mb-3">
+        {loading ? (
+          <p className="text-gray-500 text-sm">Загрузка...</p>
+        ) : (
+          comments.map((c) => (
+            <div key={c.id} className="flex gap-2">
+              <div className="w-7 h-7 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                {c.author?.avatar ? (
+                  <img src={c.author.avatar} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-xs">{c.author?.username?.[0]?.toUpperCase()}</span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs font-medium text-gray-400">{c.author?.username}</span>
+                <p className="text-gray-200 text-sm">{c.content}</p>
+              </div>
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Написать комментарий..."
+          className="flex-1 bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-blue-500/50"
+        />
+        <button type="submit" disabled={!text.trim()} className="px-3 py-2 rounded-xl bg-blue-500/20 text-blue-400 text-sm hover:bg-blue-500/30 disabled:opacity-50">
+          <Send size={16} />
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, onSendPost, onPostReact, onJoinChannel, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onUpdateChannel, onCloseSettings, onCloseChannel, onOpenMediaViewer }) {
   const [text, setText] = useState('');
   const [mediaFiles, setMediaFiles] = useState([]); // [{ file, url, type }]
   const [showSettings, setShowSettings] = useState(false);
@@ -243,6 +418,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
   const [menuMsg, setMenuMsg] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMsg, setEditingMsg] = useState(null);
+  const [expandedPostId, setExpandedPostId] = useState(null);
   const typingEndTimerRef = useRef(null);
   const loadMoreRef = useRef(null);
   const { user } = useAuth();
@@ -270,6 +446,10 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
   useEffect(() => {
     if (chat) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat?.id]);
+
+  useEffect(() => {
+    setExpandedPostId(null);
+  }, [channel?.id]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -306,21 +486,33 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!text.trim() && mediaFiles.length === 0) return;
-    if (socket && chat?.id) socket.emit('typing_end', { chatId: chat.id });
-    if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
-    onSend(text.trim(), mediaFiles.map((m) => m.file), replyTo?.id);
-    setText('');
-    setReplyTo(null);
-    clearMedia();
+    if (channel) {
+      onSendPost?.(text.trim(), mediaFiles.map((m) => m.file));
+      setText('');
+      clearMedia();
+    } else {
+      if (socket && chat?.id) socket.emit('typing_end', { chatId: chat.id });
+      if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
+      onSend(text.trim(), mediaFiles.map((m) => m.file), replyTo?.id);
+      setText('');
+      setReplyTo(null);
+      clearMedia();
+    }
   };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (text.trim() || mediaFiles.length > 0) {
-        onSend(text.trim(), mediaFiles.map((m) => m.file));
-        setText('');
-        clearMedia();
+        if (channel) {
+          onSendPost?.(text.trim(), mediaFiles.map((m) => m.file));
+          setText('');
+          clearMedia();
+        } else {
+          onSend(text.trim(), mediaFiles.map((m) => m.file));
+          setText('');
+          clearMedia();
+        }
       }
     }
   };
@@ -339,8 +531,9 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
       alert('Разрешены: jpg, png, webp, gif, mp4. Максимум 20 МБ на файл.');
     }
     if (valid.length === 0) return;
-    const maxTotal = 28;
+    const maxPhotos = 20;
     const maxVideos = 8;
+    const maxTotal = maxPhotos + maxVideos;
     if (files.length + mediaFiles.length > maxTotal) {
       alert('Максимум 20 фото и 8 видео');
       return;
@@ -353,9 +546,15 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
       }));
       const combined = [...prev, ...newItems].slice(0, maxTotal);
       const videoCount = combined.filter((m) => m.type === 'video').length;
+      const photoCount = combined.filter((m) => m.type === 'image').length;
       if (videoCount > maxVideos) {
         newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
         alert('Максимум 8 видео в одном сообщении');
+        return prev;
+      }
+      if (photoCount > maxPhotos) {
+        newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
+        alert('Максимум 20 фото в одном сообщении');
         return prev;
       }
       return combined;
@@ -400,48 +599,51 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
     setReplyTo(null);
   }, [onSend, replyTo?.id]);
 
-  if (!chat) {
+  if (!chat && !channel) {
     return (
       <div className="flex-1 flex items-center justify-center bg-white/5 backdrop-blur-md border-l border-white/10">
-        <p className="text-gray-500">Выберите чат или начните новый диалог</p>
+        <p className="text-gray-500">Выберите чат или канал</p>
       </div>
     );
   }
 
-  const name = chat.otherUser?.username || chat.name || 'Чат';
-  const avatar = chat.otherUser?.avatar;
-  const status = typingUser
-    ? 'Печатает...'
-    : chat.isGroup
-      ? `${chat.participantCount ?? 0} участников`
-      : (userStatus[chat.otherUser?.id] === 'online' ? 'в сети' : 'не в сети');
+  const isChannelMode = !!channel;
+  const name = isChannelMode ? (channel?.name ?? 'Канал') : (chat?.otherUser?.username || chat?.name || 'Чат');
+  const avatar = isChannelMode ? channel?.avatar : chat?.otherUser?.avatar;
+  const status = isChannelMode
+    ? `${channel._count?.members ?? 0} подписчиков`
+    : typingUser
+      ? 'Печатает...'
+      : chat?.isGroup
+        ? `${chat.participantCount ?? 0} участников`
+        : (userStatus[chat?.otherUser?.id] === 'online' ? 'в сети' : 'не в сети');
 
   return (
     <div className="flex-1 flex flex-col bg-white/5 backdrop-blur-md border-l border-white/10 shadow-2xl min-w-0">
       <header className="flex-shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/5">
         <div className="w-10 h-10 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden flex-shrink-0">
-          {(avatar || chat.avatar) ? (
-            <img src={avatar || chat.avatar} alt="" className="w-full h-full object-cover" />
+          {(avatar ?? chat?.avatar) ? (
+            <img src={avatar ?? chat?.avatar} alt="" className="w-full h-full object-cover" />
           ) : (
-            <span className="text-white font-medium">{name[0]?.toUpperCase() || '?'}</span>
+            <span className="text-white font-medium">{(name ?? '?')[0]?.toUpperCase() || '?'}</span>
           )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="font-medium text-gray-100 truncate">{name}</div>
           <div className="text-sm text-gray-500 truncate">{status}</div>
         </div>
-        {chat.isGroup && (
+        {(chat?.isGroup || (channel && (channel.creatorId === user?.id || channel.isAdmin))) && (
           <button
             onClick={() => setShowSettings(true)}
             className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
-            title="Настройки группы"
+            title={channel ? 'Настройки канала' : 'Настройки группы'}
           >
             <Settings size={20} />
           </button>
         )}
       </header>
 
-      {pinnedMessage && (
+      {pinnedMessage && !channel && (
         <button
           className="flex-shrink-0 flex items-center gap-2 px-4 py-2 mx-4 mt-2 border border-white/10 rounded-xl bg-white/10 backdrop-blur-sm hover:bg-white/15 transition-all text-left"
           onClick={() => scrollToMessage(pinnedMessage.id)}
@@ -454,8 +656,87 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
         </button>
       )}
 
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 pb-8 md:pb-10 space-y-3 flex flex-col">
-        {loading ? (
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 pb-8 md:pb-10 space-y-3 flex flex-col w-full">
+        {isChannelMode && channel ? (
+          postsLoading ? (
+            <div className="flex-1 flex items-center justify-center text-gray-500">Загрузка...</div>
+          ) : !Array.isArray(posts) ? (
+            <div className="flex-1 flex items-center justify-center text-gray-500">Ошибка загрузки</div>
+          ) : posts.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-gray-500">Пока нет постов</div>
+          ) : (
+            <div className="flex flex-col gap-6 w-full max-w-[680px] mx-auto">
+              {posts.map((post) => {
+                if (!post?.id) return null;
+                const mediaUrls = post.mediaUrls || (post.mediaUrl ? [post.mediaUrl] : []);
+                const mediaTypes = post.mediaTypes || (post.mediaType ? [post.mediaType] : []);
+                const counts = post.reactionCounts || {};
+                const userReacted = post.userReacted;
+                const isExpanded = expandedPostId === post.id;
+                return (
+                  <div key={post.id} className="w-full flex justify-center">
+                    <div className="w-full max-w-[100%] rounded-2xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/5 shadow-xl">
+                      {mediaUrls.length > 0 && (
+                        <div className="relative w-full">
+                          <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
+                        </div>
+                      )}
+                      <div className="p-4">
+                        {post.content && (
+                          <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-gray-200 mb-4">{post.content}</div>
+                        )}
+                        {channel && !channel.isMember && (
+                          <div className="flex items-center gap-2 mb-4">
+                            <span className="text-sm text-gray-400">{channel?.name}</span>
+                            <button
+                              onClick={onJoinChannel}
+                              className="text-sm text-blue-400 hover:text-blue-300 font-medium"
+                            >
+                              Подписаться
+                            </button>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-3 mb-3">
+                          {REACTION_EMOJIS.map((emoji) => (
+                            <button
+                              key={emoji}
+                              onClick={() => onPostReact?.(post.id, emoji)}
+                              className={`px-2.5 py-1 rounded-lg text-sm transition-all ${
+                                userReacted === emoji ? 'bg-blue-500/30 text-blue-300' : 'bg-white/5 text-gray-400 hover:text-gray-200 hover:bg-white/10'
+                              }`}
+                            >
+                              {emoji}{counts[emoji] ? ` ${counts[emoji]}` : ''}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            onClick={() => setExpandedPostId((p) => (p === post.id ? null : post.id))}
+                            className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors"
+                          >
+                            <MessageCircle size={16} />
+                            {formatCommentCount(post.commentCount)}
+                            <ChevronRight size={16} className={isExpanded ? 'rotate-90' : ''} />
+                          </button>
+                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                            <span className="flex items-center gap-1">
+                              <Eye size={14} />
+                              {formatViews(post.viewCount)}
+                            </span>
+                            <span>{new Date(post.createdAt).toLocaleString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <PostCommentsInline post={post} socket={socket} onClose={() => setExpandedPostId(null)} />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : loading ? (
           <div className="flex-1 flex items-center justify-center text-gray-500">Загрузка...</div>
         ) : (
           <>
@@ -485,11 +766,14 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                 onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               >
                 {isSticker ? (
-                  <div className="flex flex-col items-center gap-1.5">
+                  <div className="relative flex flex-col items-center gap-1.5 min-w-[192px]">
                     <img src={mediaUrls[0]} alt="" className="w-48 h-48 object-contain" />
-                    <div className={`flex items-center gap-1.5 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
-                      <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
-                      {isOwn && (msg.isRead ? <CheckCheck className="w-4 h-4" /> : <Check className="w-4 h-4" />)}
+                    <div className="absolute bottom-1 right-2 flex items-center gap-1 select-none pointer-events-none text-[10px] opacity-60">
+                      <span className={isOwn ? 'text-blue-200' : 'text-gray-500'}>
+                        {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                        {msg.editedAt && ' (изм.)'}
+                      </span>
+                      {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
                     </div>
                     {(() => {
                       const seen = new Set();
@@ -540,22 +824,22 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                     isOwn
                       ? 'bg-blue-600/80 backdrop-blur-sm rounded-tr-sm text-white'
                       : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm text-gray-100'
-                  } ${hasMedia ? 'p-0' : 'p-3 md:p-4'}`}
+                  } p-0`}
                 >
                   {hasMedia && !isSticker && (
                     <div className={`relative flex flex-col ${mediaUrls.length === 1 && !hasText && !msg.replyTo ? 'w-fit' : 'w-full'}`}>
-                      <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} />
+                      <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
                       {!hasText && !msg.replyTo && (
-                        <div className="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] text-white flex items-center gap-1 select-none pointer-events-none">
-                          {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                        <div className="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full text-white opacity-100 flex items-center gap-1 select-none pointer-events-none text-[10px]">
+                          <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
                           {msg.editedAt && <span>(изм.)</span>}
-                          {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-300" /> : <Check size={12} />)}
+                          {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
                         </div>
                       )}
                     </div>
                   )}
                   {showTextBlock ? (
-                    <div className={`${hasMedia ? 'px-3 py-2 bg-inherit relative w-full text-left' : ''} space-y-1 relative min-w-[80px]`}>
+                    <div className={`px-3 pt-2 pb-5 min-w-[80px] ${hasMedia ? 'bg-inherit' : ''} space-y-1 relative`}>
                       {msg.replyTo && (
                         <div className={`mb-1 border-l-2 pl-2 opacity-80 text-[15px] leading-snug ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
                           <span className="font-medium">{msg.replyTo.sender?.username}</span>
@@ -566,7 +850,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                         <div className="italic opacity-70 text-[15px] leading-snug">Сообщение удалено</div>
                       ) : (
                         (msg.content || msg.text) && (
-                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words pr-12">
+                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words">
                             {msg.content ?? msg.text}
                           </div>
                         )
@@ -613,8 +897,8 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                           </div>
                         );
                       })()}
-                      <div className={`absolute bottom-1 right-2 flex items-center gap-1 text-[10px] opacity-50 select-none ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
-                        {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                      <div className={`absolute bottom-1 right-2 flex items-center gap-1 select-none pointer-events-none opacity-60 text-[10px] ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
+                        <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
                         {msg.editedAt && <span>(изм.)</span>}
                         {isOwn && !msg.isDeleted && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
                       </div>
@@ -755,7 +1039,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
         </div>
       )}
 
-      {showSettings && (
+      {showSettings && chat && (
         <GroupSettingsModal
           data={chat}
           currentUser={user}
@@ -769,8 +1053,20 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
           }}
         />
       )}
-
-      {editingMsg && (
+      {showSettings && channel && (
+        <ChannelSettingsModal
+          data={channel}
+          currentUser={user}
+          onClose={(opts) => {
+            setShowSettings(false);
+            if (opts?.left || opts?.deleted) onCloseChannel?.(opts);
+          }}
+          onUpdate={(updated) => {
+            onUpdateChannel?.(updated);
+          }}
+        />
+      )}
+      {editingMsg && !channel && (
         <div className="flex-shrink-0 mx-4 mb-2 p-3 rounded-xl bg-white/10 border border-white/10 flex items-center gap-2">
           <span className="text-sm text-gray-500">Редактирование:</span>
           <input
@@ -797,7 +1093,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
         </div>
       )}
 
-      {replyTo && (
+      {replyTo && !channel && (
         <div className="flex-shrink-0 mx-4 mb-2 p-3 rounded-xl bg-white/10 border-l-4 border-blue-500/50 flex items-center justify-between">
           <div className="min-w-0">
             <span className="text-xs text-blue-400 font-medium">{replyTo.sender?.username}</span>
@@ -807,6 +1103,23 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
         </div>
       )}
 
+      {channel && !channel.isMember ? (
+        <div className="flex-shrink-0 p-4 pb-6 md:pb-8">
+          <button
+            type="button"
+            onClick={onJoinChannel}
+            className="w-full py-3 rounded-2xl bg-blue-600/80 hover:bg-blue-500/80 backdrop-blur-sm text-white font-medium border border-blue-500/30 transition-all"
+          >
+            Подписаться
+          </button>
+        </div>
+      ) : channel && channel.isMember && channel.creatorId !== user?.id && !channel.isAdmin ? (
+        <div className="flex-shrink-0 p-4 pb-6 md:pb-8">
+          <div className="flex items-center justify-center py-3 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 text-gray-500 text-sm">
+            Вы не можете отправлять сообщения в этот канал
+          </div>
+        </div>
+      ) : (
       <form className="flex-shrink-0 p-4 pb-6 md:pb-8" onSubmit={handleSubmit}>
         {mediaFiles.length > 0 && (
           <div className="flex gap-2 overflow-x-auto pb-3 mb-2 no-scrollbar">
@@ -829,7 +1142,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
             ))}
           </div>
         )}
-        <div ref={inputContainerRef} className="relative flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
+        <div ref={inputContainerRef} className="relative flex items-end gap-2 bg-white/10 backdrop-blur-2xl border border-white/20 rounded-[28px] p-2 shadow-2xl w-full max-w-5xl mx-auto transition-all duration-300">
           {showMediaPicker && (
             <>
               <div
@@ -884,7 +1197,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
-            placeholder="Сообщение..."
+            placeholder={channel ? 'Написать пост...' : 'Сообщение...'}
             maxLength={2000}
             rows={1}
             className="flex-1 bg-transparent border-none focus:outline-none text-gray-100 placeholder-gray-500 max-h-32 overflow-y-auto resize-none py-2 px-3"
@@ -899,6 +1212,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
           </button>
         </div>
       </form>
+      )}
     </div>
   );
 }
@@ -918,13 +1232,50 @@ export default function ChatsPage() {
   const [users, setUsers] = useState([]);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [chatFilter, setChatFilter] = useState('personal'); // 'personal' | 'group'
+  const [chatFilter, setChatFilter] = useState('personal'); // 'personal' | 'group' | 'channels'
+  const [channels, setChannels] = useState([]);
+  const [selectedChannel, setSelectedChannel] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [channelName, setChannelName] = useState('');
+  const [channelDescription, setChannelDescription] = useState('');
   const [typingUser, setTypingUser] = useState(null);
   const [storyFeed, setStoryFeed] = useState([]);
   const storyFileInputRef = useRef(null);
   const [storyViewer, setStoryViewer] = useState(null); // { initialUserIndex }
   const [selectedStoryFile, setSelectedStoryFile] = useState(null);
   const [, setForceRender] = useState(0);
+  const [viewerData, setViewerData] = useState({ isOpen: false, images: [], types: [], index: 0 });
+
+  const openViewer = (images, types, index = 0) => {
+    setViewerData({ isOpen: true, images: images || [], types: types || [], index });
+  };
+
+  const closeViewer = () => {
+    setViewerData((prev) => ({ ...prev, isOpen: false }));
+  };
+
+  const nextMedia = (e) => {
+    e?.stopPropagation();
+    setViewerData((prev) => ({ ...prev, index: (prev.index + 1) % prev.images.length }));
+  };
+
+  const prevMedia = (e) => {
+    e?.stopPropagation();
+    setViewerData((prev) => ({ ...prev, index: (prev.index - 1 + prev.images.length) % prev.images.length }));
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (!viewerData.isOpen) return;
+      if (e.key === 'Escape') closeViewer();
+      if (e.key === 'ArrowRight') nextMedia();
+      if (e.key === 'ArrowLeft') prevMedia();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [viewerData.isOpen]);
 
   useEffect(() => {
     const handleView = () => setForceRender((prev) => prev + 1);
@@ -964,12 +1315,26 @@ export default function ChatsPage() {
   }, []);
 
   useEffect(() => {
+    if (chatFilter === 'channels') {
+      getChannels().then(setChannels).catch(console.error);
+    }
+  }, [chatFilter]);
+
+  useEffect(() => {
     if (!socket) return;
     if (selectedChat) socket.emit('join_chat', selectedChat.id);
     return () => {
       if (selectedChat) socket.emit('leave_chat', selectedChat.id);
     };
   }, [socket, selectedChat?.id]);
+
+  useEffect(() => {
+    if (!socket) return;
+    if (selectedChannel) socket.emit('join_channel', selectedChannel.id);
+    return () => {
+      if (selectedChannel) socket.emit('leave_channel', selectedChannel.id);
+    };
+  }, [socket, selectedChannel?.id]);
 
   useEffect(() => {
     if (!selectedChat) setTypingUser(null);
@@ -1103,11 +1468,43 @@ export default function ChatsPage() {
     };
   }, [socket, selectedChat?.id, user?.id]);
 
+  useEffect(() => {
+    if (!socket || !selectedChannel?.id) return;
+    const onNewPost = (post) => {
+      if (post.channelId !== selectedChannel.id) return;
+      setPosts((prev) => {
+        if (prev.some((p) => p.id === post.id)) return prev;
+        return [post, ...prev];
+      });
+    };
+    const onPostReaction = ({ postId, reactionCounts }) => {
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, reactionCounts } : p))
+      );
+    };
+    const onNewComment = ({ postId }) => {
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, commentCount: (p.commentCount || 0) + 1 } : p
+        )
+      );
+    };
+    socket.on('new_post', onNewPost);
+    socket.on('post_reaction', onPostReaction);
+    socket.on('new_comment', onNewComment);
+    return () => {
+      socket.off('new_post', onNewPost);
+      socket.off('post_reaction', onPostReaction);
+      socket.off('new_comment', onNewComment);
+    };
+  }, [socket, selectedChannel?.id]);
+
   const [messagesNextCursor, setMessagesNextCursor] = useState(null);
   const [messagesHasMore, setMessagesHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const selectChat = (chat) => {
+    setSelectedChannel(null);
     setSelectedChat(chat);
     setMessagesLoading(true);
     setMessagesNextCursor(null);
@@ -1127,6 +1524,28 @@ export default function ChatsPage() {
     setChats((prev) =>
       prev.map((c) => (c.id === chat.id ? { ...c, unreadCount: 0 } : c))
     );
+  };
+
+  const loadingChannelIdRef = useRef(null);
+  const selectChannel = (ch) => {
+    if (!ch?.id) return;
+    setSelectedChat(null);
+    setSelectedChannel(ch);
+    setPosts([]);
+    setPostsLoading(true);
+    loadingChannelIdRef.current = ch.id;
+    getChannel(ch.id)
+      .then((full) => setSelectedChannel((prev) => (prev?.id === ch.id ? { ...ch, ...full } : prev)))
+      .catch((e) => { console.error(e); loadingChannelIdRef.current = null; });
+    getChannelPosts(ch.id)
+      .then((data) => {
+        const newPosts = Array.isArray(data) ? data : (data?.posts || data?.items || []);
+        setPosts((prev) => (loadingChannelIdRef.current === ch.id ? newPosts : prev));
+      })
+      .catch((e) => { console.error(e); })
+      .finally(() => {
+        if (loadingChannelIdRef.current === ch.id) setPostsLoading(false);
+      });
   };
 
   const loadMoreMessages = () => {
@@ -1400,7 +1819,7 @@ export default function ChatsPage() {
 
           <div className="flex items-center gap-1 flex-1 overflow-x-auto no-scrollbar min-w-0">
             <button
-              onClick={() => setChatFilter('personal')}
+              onClick={() => { setChatFilter('personal'); setSelectedChannel(null); }}
               className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
                 chatFilter === 'personal'
                   ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
@@ -1410,7 +1829,7 @@ export default function ChatsPage() {
               Личные
             </button>
             <button
-              onClick={() => setChatFilter('group')}
+              onClick={() => { setChatFilter('group'); setSelectedChannel(null); }}
               className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
                 chatFilter === 'group'
                   ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
@@ -1419,41 +1838,86 @@ export default function ChatsPage() {
             >
               Группы
             </button>
-            <Link
-              to="/channels"
-              className="px-3 py-1.5 text-sm font-medium rounded-xl text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-all flex-shrink-0"
+            <button
+              onClick={() => { setChatFilter('channels'); setSelectedChat(null); }}
+              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
+                chatFilter === 'channels'
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+              }`}
             >
               Каналы
-            </Link>
+            </button>
             <div className="flex-1 min-w-2" />
             <button
               className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 hover:scale-105 transition-all duration-300 border border-blue-500/30 flex-shrink-0"
-              onClick={openNewChat}
-              title="Новый чат"
+              onClick={chatFilter === 'channels' ? () => setShowCreateChannel(true) : openNewChat}
+              title={chatFilter === 'channels' ? 'Создать канал' : 'Новый чат'}
             >
               <Plus size={20} strokeWidth={2.5} />
             </button>
           </div>
         </header>
-        <ChatList
-          chats={chats}
-          selectedId={selectedChat?.id}
-          onSelect={selectChat}
-          userStatus={userStatus}
-          searchQuery={searchQuery}
-          chatFilter={chatFilter}
-        />
+        {chatFilter === 'channels' ? (
+          <ChannelList
+            channels={channels}
+            selectedId={selectedChannel?.id}
+            onSelect={selectChannel}
+            searchQuery={searchQuery}
+          />
+        ) : (
+          <ChatList
+            chats={chats}
+            selectedId={selectedChat?.id}
+            onSelect={selectChat}
+            userStatus={userStatus}
+            searchQuery={searchQuery}
+            chatFilter={chatFilter}
+          />
+        )}
       </aside>
 
-      <main className="flex-1 flex min-w-0">
+      <main className="flex-1 flex min-w-0 bg-gradient-to-br from-slate-950 via-slate-900/95 to-slate-950">
         <ChatWindow
           chat={selectedChat}
+          channel={selectedChannel}
           messages={messages}
+          posts={posts}
+          postsLoading={postsLoading}
           onSend={handleSendMessage}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
           onAddReaction={handleAddReaction}
           onRemoveReaction={handleRemoveReaction}
+          onSendPost={(text, mediaFiles) => {
+            if (!selectedChannel) return;
+            createPost(selectedChannel.id, text, mediaFiles)
+              .then((post) => {
+                setPosts((prev) => (prev.some((p) => p.id === post.id) ? prev : [post, ...prev]));
+              })
+              .catch(console.error);
+          }}
+          onPostReact={(postId, emoji) => {
+            reactToPost(postId, emoji)
+              .then(({ reactionCounts, userReacted }) => {
+                setPosts((prev) =>
+                  prev.map((p) => (p.id === postId ? { ...p, reactionCounts, userReacted } : p))
+                );
+              })
+              .catch(console.error);
+          }}
+          onJoinChannel={async () => {
+            if (!selectedChannel) return;
+            try {
+              await joinChannel(selectedChannel.id);
+              setSelectedChannel((prev) => (prev ? { ...prev, isMember: true } : prev));
+              setChannels((prev) =>
+                prev.map((c) => (c.id === selectedChannel.id ? { ...c, isMember: true } : c))
+              );
+            } catch (e) {
+              console.error(e);
+            }
+          }}
           loading={messagesLoading}
           loadingMore={loadingMore}
           hasMore={messagesHasMore}
@@ -1465,12 +1929,20 @@ export default function ChatsPage() {
           typingUser={typingUser}
           socket={socket}
           onUpdateChat={(updated) => setSelectedChat((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
+          onUpdateChannel={(updated) => setSelectedChannel((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
           onCloseSettings={(opts) => {
             if (opts?.left || opts?.deleted) {
               setSelectedChat(null);
               getChats().then(setChats);
             }
           }}
+          onCloseChannel={(opts) => {
+            if (opts?.left || opts?.deleted) {
+              setSelectedChannel(null);
+              getChannels().then(setChannels);
+            }
+          }}
+          onOpenMediaViewer={openViewer}
         />
       </main>
 
@@ -1568,12 +2040,133 @@ export default function ChatsPage() {
         </div>
       )}
 
+      {showCreateChannel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowCreateChannel(false)}>
+          <div className="w-full max-w-md bg-white/10 backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-xl font-semibold text-gray-100 mb-4">Создать канал</h2>
+            <label className="block mb-2 text-sm text-gray-400">
+              Название
+              <input
+                type="text"
+                value={channelName}
+                onChange={(e) => setChannelName(e.target.value)}
+                placeholder="Название канала"
+                className="mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50"
+              />
+            </label>
+            <label className="block mb-4 text-sm text-gray-400">
+              Описание (необязательно)
+              <textarea
+                value={channelDescription}
+                onChange={(e) => setChannelDescription(e.target.value)}
+                placeholder="Описание канала"
+                rows={3}
+                className="mt-1 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 resize-none"
+              />
+            </label>
+            <button
+              className="w-full py-3 rounded-xl bg-blue-500/30 text-blue-300 font-medium border border-blue-500/50 hover:bg-blue-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed mb-2"
+              onClick={async () => {
+                if (!channelName.trim()) return;
+                setCreating(true);
+                try {
+                  const ch = await createChannel(channelName.trim(), channelDescription.trim());
+                  const chWithMembership = { ...ch, isMember: true, isAdmin: true, _count: { members: 1, posts: 0 } };
+                  setChannels((prev) => [chWithMembership, ...prev]);
+                  setShowCreateChannel(false);
+                  setChannelName('');
+                  setChannelDescription('');
+                  selectChannel(chWithMembership);
+                } catch (e) {
+                  console.error(e);
+                } finally {
+                  setCreating(false);
+                }
+              }}
+              disabled={creating || !channelName.trim()}
+            >
+              {creating ? 'Создание...' : 'Создать'}
+            </button>
+            <button
+              className="w-full py-2 rounded-xl bg-black/40 text-gray-400 border border-white/10 hover:bg-white/10 hover:text-gray-200 transition-all"
+              onClick={() => setShowCreateChannel(false)}
+            >
+              Закрыть
+            </button>
+          </div>
+        </div>
+      )}
+
       {selectedStoryFile && (
         <StoryPreviewModal
           file={selectedStoryFile}
           onClose={() => setSelectedStoryFile(null)}
           onConfirm={handleConfirmStoryUpload}
         />
+      )}
+
+      {viewerData.isOpen && viewerData.images.length > 0 && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/95 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200"
+          onClick={closeViewer}
+        >
+          <button
+            type="button"
+            onClick={closeViewer}
+            className="absolute top-5 right-5 text-white/70 hover:text-white z-[210]"
+            aria-label="Закрыть"
+          >
+            <X size={32} />
+          </button>
+
+          {viewerData.images.length > 1 && (
+            <button
+              type="button"
+              onClick={prevMedia}
+              className="absolute left-4 p-3 rounded-full bg-white/5 hover:bg-white/10 text-white z-[210] transition-all"
+              aria-label="Назад"
+            >
+              <ChevronLeft size={40} />
+            </button>
+          )}
+
+          <div
+            className="max-w-[90vw] max-h-[90vh] flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(viewerData.types[viewerData.index] || 'image') === 'video' ? (
+              <video
+                src={viewerData.images[viewerData.index]}
+                controls
+                autoPlay
+                className="max-w-full max-h-[90vh] object-contain shadow-2xl rounded-sm"
+              />
+            ) : (
+              <img
+                src={viewerData.images[viewerData.index]}
+                alt=""
+                className="max-w-full max-h-[90vh] object-contain shadow-2xl rounded-sm"
+              />
+            )}
+          </div>
+
+          {viewerData.images.length > 1 && (
+            <button
+              type="button"
+              onClick={nextMedia}
+              className="absolute right-4 p-3 rounded-full bg-white/5 hover:bg-white/10 text-white z-[210] transition-all"
+              aria-label="Вперёд"
+            >
+              <ChevronRight size={40} />
+            </button>
+          )}
+
+          {viewerData.images.length > 1 && (
+            <div className="absolute bottom-10 text-white/60 text-sm font-medium px-4 py-2 bg-white/5 rounded-full">
+              {viewerData.index + 1} / {viewerData.images.length}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

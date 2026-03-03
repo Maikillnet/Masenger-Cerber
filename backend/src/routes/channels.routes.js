@@ -286,14 +286,37 @@ router.get('/:id/posts', async (req, res) => {
   }
 });
 
-// POST /api/channels/:id/posts — создать пост (только админ), multipart/form-data: content, media
-router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
+// POST /api/channels/:id/posts — создать пост (только админ), multipart/form-data: content, media (массив)
+router.post('/:id/posts', uploadMedia.array('media', 20), async (req, res) => {
   try {
     const content = (req.body.content || '').trim();
-    const hasMedia = !!req.file;
+    const files = Array.isArray(req.files) ? req.files : [];
+    const hasMedia = files.length > 0;
 
     if (!content && !hasMedia) {
       return res.status(400).json({ error: 'Укажите текст или прикрепите медиафайл' });
+    }
+
+    if (hasMedia) {
+      const mediaTypes = files.map((f) => getMediaType(f.filename));
+      const videoCount = mediaTypes.filter((t) => t === 'video').length;
+      const photoCount = mediaTypes.filter((t) => t === 'image').length;
+      if (photoCount > 20) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (e) { /* ignore */ }
+        });
+        return res.status(400).json({ error: 'Максимум 20 фото в одном посте' });
+      }
+      if (videoCount > 8) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (e) { /* ignore */ }
+        });
+        return res.status(400).json({ error: 'Максимум 8 видео в одном посте' });
+      }
     }
 
     const channel = await prisma.channel.findFirst({
@@ -312,11 +335,13 @@ router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
       content: content || '',
       authorId: req.user.id,
       channelId: req.params.id,
+      mediaUrls: [],
+      mediaTypes: [],
     };
 
     if (hasMedia) {
-      postData.mediaUrls = [`/uploads/media/${req.file.filename}`];
-      postData.mediaTypes = [getMediaType(req.file.filename)];
+      postData.mediaUrls = files.map((f) => `/uploads/media/${f.filename}`);
+      postData.mediaTypes = files.map((f) => getMediaType(f.filename));
     }
 
     let post;
@@ -328,12 +353,14 @@ router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
         },
       });
     } catch (createErr) {
-      if (hasMedia && req.file?.path) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (unlinkErr) {
-          console.error('Failed to delete uploaded file:', unlinkErr);
-        }
+      if (hasMedia && files.length > 0) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (unlinkErr) {
+            console.error('Failed to delete uploaded file:', unlinkErr);
+          }
+        });
       }
       throw createErr;
     }

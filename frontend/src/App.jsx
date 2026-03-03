@@ -5,8 +5,7 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import CabinetPage from './pages/CabinetPage';
 import ChatsPage from './pages/ChatsPage';
-import ChannelsPage from './pages/ChannelsPage';
-import ChannelViewPage from './pages/ChannelViewPage';
+import ErrorBoundary from './components/ErrorBoundary';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -61,7 +60,9 @@ function AppRoutes() {
         path="/chats"
         element={
           <ProtectedRoute>
-            <ChatsPage />
+            <ErrorBoundary>
+              <ChatsPage />
+            </ErrorBoundary>
           </ProtectedRoute>
         }
       />
@@ -69,7 +70,7 @@ function AppRoutes() {
         path="/channels"
         element={
           <ProtectedRoute>
-            <ChannelsPage />
+            <Navigate to="/chats" replace />
           </ProtectedRoute>
         }
       />
@@ -77,7 +78,7 @@ function AppRoutes() {
         path="/channels/:id"
         element={
           <ProtectedRoute>
-            <ChannelViewPage />
+            <Navigate to="/chats" replace />
           </ProtectedRoute>
         }
       />

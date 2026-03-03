@@ -468,15 +468,16 @@ export async function getChannelPosts(channelId) {
   return data;
 }
 
-export async function createPost(channelId, content, mediaFile = null) {
+export async function createPost(channelId, content, mediaFiles = []) {
   const token = localStorage.getItem('token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const files = Array.isArray(mediaFiles) ? mediaFiles : mediaFiles ? [mediaFiles] : [];
 
   let body;
-  if (mediaFile) {
+  if (files.length > 0) {
     const formData = new FormData();
     formData.append('content', content || '');
-    formData.append('media', mediaFile);
+    files.forEach((file) => formData.append('media', file));
     body = formData;
   } else {
     headers['Content-Type'] = 'application/json';

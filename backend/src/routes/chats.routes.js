@@ -402,6 +402,15 @@ router.post('/:id/messages', (req, res, next) => {
     if (hasMedia) {
       const mediaTypes = getMediaType(files);
       const videoCount = mediaTypes.filter((t) => t === 'video').length;
+      const photoCount = mediaTypes.filter((t) => t === 'image').length;
+      if (photoCount > 20) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (e) { /* ignore */ }
+        });
+        return res.status(400).json({ error: 'Максимум 20 фото в одном сообщении' });
+      }
       if (videoCount > 8) {
         files.forEach((f) => {
           try {

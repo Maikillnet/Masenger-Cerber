@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings } from 'lucide-react';
+import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings, Smile } from 'lucide-react';
 import {
   getChannel,
   getChannelPosts,
@@ -11,28 +11,47 @@ import {
   joinChannel,
 } from '../api';
 import ChannelSettingsModal from '../components/ChannelSettingsModal';
+import MediaPicker from '../components/MediaPicker';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
-const EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+function PostCard({ post, onReact, onCommentClick, onContextMenu }) {
+  const mediaUrls = post.mediaUrls || (post.mediaUrl ? [post.mediaUrl] : []);
+  const mediaTypes = post.mediaTypes || (post.mediaType ? [post.mediaType] : []);
+  const hasMedia = mediaUrls.length > 0;
+  const hasImageOrVideo = mediaUrls.some((_, i) => (mediaTypes[i] || 'image') === 'image' || (mediaTypes[i] || '') === 'video');
 
-function PostCard({ post, currentUserId, onReact, onCommentClick }) {
   const counts = post.reactionCounts || {};
   const userReacted = post.userReacted;
+  const reactionEntries = Object.entries(counts).filter(([, c]) => c > 0);
 
   return (
-    <div className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg overflow-hidden flex flex-col h-auto">
-      {post.mediaUrl && (post.mediaType === 'image' || post.mediaType === 'video') && (
-        <div className="relative w-full">
-          {post.mediaType === 'image' && (
-            <img src={post.mediaUrl} alt="" className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
-          )}
-          {post.mediaType === 'video' && (
-            <video src={post.mediaUrl} controls className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
+    <div
+      className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg overflow-hidden flex flex-col h-auto"
+      onContextMenu={(e) => onContextMenu?.(e, post)}
+    >
+      {hasMedia && hasImageOrVideo && (
+        <div className={`relative w-full ${mediaUrls.length > 1 ? `grid gap-1 p-2 ${mediaUrls.length === 2 || mediaUrls.length === 4 ? 'grid-cols-2' : 'grid-cols-3'}` : ''}`}>
+          {mediaUrls.length === 1 ? (
+            mediaTypes[0] === 'video' ? (
+              <video src={mediaUrls[0]} controls className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
+            ) : (
+              <img src={mediaUrls[0]} alt="" className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
+            )
+          ) : (
+            mediaUrls.map((url, i) => (
+              <div key={i} className="relative aspect-square overflow-hidden rounded-lg bg-black/20">
+                {(mediaTypes[i] || 'image') === 'video' ? (
+                  <video src={url} className="w-full h-full object-cover" controls />
+                ) : (
+                  <img src={url} alt="" className="w-full h-full object-cover" />
+                )}
+              </div>
+            ))
           )}
         </div>
       )}
-      <div className={`${post.mediaUrl && (post.mediaType === 'image' || post.mediaType === 'video') ? 'px-4 pb-4 pt-2' : 'p-4'}`}>
+      <div className={`${hasMedia && hasImageOrVideo ? 'px-4 pb-4 pt-2' : 'p-4'}`}>
         <div className="flex items-center gap-3 mb-4">
           <div className="w-11 h-11 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden flex-shrink-0">
             {post.author?.avatar ? (
@@ -51,32 +70,41 @@ function PostCard({ post, currentUserId, onReact, onCommentClick }) {
           <div className="mb-4 whitespace-pre-wrap break-words text-gray-200">{post.content}</div>
         )}
 
-        {post.mediaUrl && post.mediaType === 'document' && (
-          <div className="mb-4">
-            <a href={post.mediaUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">
-              <Paperclip size={14} /> Открыть файл
-            </a>
+        {mediaUrls.some((_, i) => (mediaTypes[i] || '') === 'document') && (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {mediaUrls.map((url, i) => (mediaTypes[i] || '') === 'document' ? (
+              <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">
+                <Paperclip size={14} /> Открыть файл
+              </a>
+            ) : null)}
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-white/10">
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-white/10">
           <span className="text-sm text-gray-500">👁 {post.viewCount ?? 0}</span>
-          <div className="flex gap-1 flex-wrap">
-            {EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                onClick={() => onReact(post.id, emoji)}
-                className={`px-2 py-1 rounded-lg text-sm transition-all ${
-                  userReacted === emoji
-                    ? 'bg-blue-500/30 text-blue-300'
-                    : 'bg-transparent text-gray-500 hover:bg-white/5 hover:text-gray-300'
-                }`}
-                title={emoji}
-              >
-                {emoji}{counts[emoji] ? ` ${counts[emoji]}` : ''}
-              </button>
-            ))}
-          </div>
+          {reactionEntries.length > 0 && (
+            <div className="flex gap-1 flex-wrap">
+              {reactionEntries.map(([emoji, count]) => (
+                <button
+                  key={emoji}
+                  onClick={() => onReact(post.id, emoji)}
+                  className={`px-2 py-0.5 rounded-full text-sm transition-all border ${
+                    userReacted === emoji
+                      ? 'bg-blue-500/30 text-blue-300 border-blue-500/50'
+                      : 'bg-white/10 backdrop-blur-sm border-white/10 text-gray-300 hover:bg-white/15 hover:text-gray-100'
+                  }`}
+                  title={emoji}
+                >
+                  {(emoji.startsWith('/uploads') || emoji.startsWith('http')) ? (
+                    <img src={emoji} alt="" className="w-5 h-5 inline object-contain" />
+                  ) : (
+                    emoji
+                  )}
+                  {count > 0 && <span className="ml-0.5">{count}</span>}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             onClick={() => onCommentClick(post)}
             className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors"
@@ -105,7 +133,11 @@ function CommentThread({ post, onClose, socket }) {
   useEffect(() => {
     if (!socket) return;
     const handler = ({ postId, comment }) => {
-      if (postId === post.id) setComments((prev) => [...prev, comment]);
+      if (postId !== post.id || !comment) return;
+      setComments((prev) => {
+        if (prev.some((c) => c.id === comment.id)) return prev;
+        return [...prev, comment];
+      });
     };
     socket.on('new_comment', handler);
     return () => socket.off('new_comment', handler);
@@ -119,7 +151,10 @@ function CommentThread({ post, onClose, socket }) {
     e.preventDefault();
     if (!text.trim()) return;
     addComment(post.id, text.trim())
-      .then((c) => setComments((prev) => [...prev, c]))
+      .then((c) => {
+        if (!c?.id) return;
+        setComments((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
+      })
       .catch(console.error);
     setText('');
   };
@@ -193,10 +228,11 @@ export default function ChannelViewPage() {
   const [channel, setChannel] = useState(null);
   const [posts, setPosts] = useState([]);
   const [postText, setPostText] = useState('');
-  const [mediaFile, setMediaFile] = useState(null);
-  const [mediaPreview, setMediaPreview] = useState(null);
+  const [mediaFiles, setMediaFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [commentPost, setCommentPost] = useState(null);
+  const [menuPost, setMenuPost] = useState(null);
+  const [reactionPost, setReactionPost] = useState(null);
   const [muted, setMuted] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -257,33 +293,59 @@ export default function ChannelViewPage() {
   }, [socket, id]);
 
   const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'video/mp4'];
-    if (!allowed.includes(file.type)) {
-      alert('Разрешены: jpg, png, webp, mp4');
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      alert('Максимум 20 МБ');
-      return;
-    }
-    setMediaFile(file);
-    const url = URL.createObjectURL(file);
-    setMediaPreview({ url, type: file.type.startsWith('video') ? 'video' : 'image' });
+    const maxSize = 20 * 1024 * 1024;
+    const maxPhotos = 20;
+    const maxVideos = 8;
+    const valid = files.filter((file) => allowed.includes(file.type) && file.size <= maxSize);
+    if (valid.length < files.length) alert('Разрешены: jpg, png, webp, mp4. Максимум 20 МБ на файл.');
+    if (valid.length === 0) return;
+    setMediaFiles((prev) => {
+      const maxTotal = 20;
+      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => ({
+        file,
+        url: URL.createObjectURL(file),
+        type: file.type.startsWith('video') ? 'video' : 'image',
+      }));
+      const combined = [...prev, ...newItems].slice(0, maxTotal);
+      const videoCount = combined.filter((m) => m.type === 'video').length;
+      const photoCount = combined.filter((m) => m.type === 'image').length;
+      if (videoCount > maxVideos || photoCount > maxPhotos) {
+        newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
+        alert('Максимум 20 фото и 8 видео');
+        return prev;
+      }
+      return combined;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  useEffect(() => {
+    const current = mediaFiles;
+    return () => current.forEach((m) => m?.url && URL.revokeObjectURL(m.url));
+  }, [mediaFiles]);
+
+  const removeMediaFile = (index) => {
+    setMediaFiles((prev) => {
+      const next = [...prev];
+      const removed = next.splice(index, 1)[0];
+      if (removed?.url) URL.revokeObjectURL(removed.url);
+      return next;
+    });
   };
 
   const clearMedia = () => {
-    if (mediaPreview?.url) URL.revokeObjectURL(mediaPreview.url);
-    setMediaFile(null);
-    setMediaPreview(null);
+    mediaFiles.forEach((m) => m?.url && URL.revokeObjectURL(m.url));
+    setMediaFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleCreatePost = (e) => {
     e.preventDefault();
-    if (!postText.trim() && !mediaFile) return;
-    createPost(id, postText.trim(), mediaFile)
+    if (!postText.trim() && mediaFiles.length === 0) return;
+    createPost(id, postText.trim(), mediaFiles.map((m) => m.file))
       .then((post) => {
         setPosts((prev) => {
           if (prev.some((p) => p.id === post.id)) return prev;
@@ -305,6 +367,11 @@ export default function ChannelViewPage() {
         );
       })
       .catch(console.error);
+  };
+
+  const handlePostContextMenu = (e, post) => {
+    e.preventDefault();
+    setMenuPost({ post, x: e.clientX, y: e.clientY });
   };
 
   if (!channel) return (
@@ -359,9 +426,9 @@ export default function ChannelViewPage() {
                 <PostCard
                   key={post.id}
                   post={post}
-                  currentUserId={user?.id}
                   onReact={handleReact}
                   onCommentClick={(p) => setCommentPost(p)}
+                  onContextMenu={handlePostContextMenu}
                 />
               ))}
             </div>
@@ -390,20 +457,24 @@ export default function ChannelViewPage() {
             </button>
           ) : isAdmin ? (
             <form onSubmit={handleCreatePost} className="flex flex-col gap-3">
-              {mediaPreview && (
-                <div className="relative inline-block ml-2">
-                  {mediaPreview.type === 'image' ? (
-                    <img src={mediaPreview.url} alt="" className="max-h-20 rounded-xl object-cover shadow-lg" />
-                  ) : (
-                    <video src={mediaPreview.url} controls className="max-h-20 rounded-xl shadow-lg" />
-                  )}
-                  <button type="button" className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70" onClick={clearMedia}>
-                    <X size={14} />
-                  </button>
+              {mediaFiles.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-3 mb-2 no-scrollbar">
+                  {mediaFiles.map((item, i) => (
+                    <div key={i} className="relative flex-shrink-0">
+                      {item.type === 'video' ? (
+                        <video src={item.url} className="h-16 w-16 rounded-lg object-cover" muted />
+                      ) : (
+                        <img src={item.url} alt="" className="h-16 w-16 rounded-lg object-cover" />
+                      )}
+                      <button type="button" className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center text-xs hover:bg-black/70" onClick={() => removeMediaFile(i)} aria-label="Удалить">
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
               <div className="flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
-                <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,video/mp4" onChange={handleFileChange} className="hidden" />
+                <input ref={fileInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4" onChange={handleFileChange} className="hidden" />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -421,7 +492,7 @@ export default function ChannelViewPage() {
                 />
                 <button
                   type="submit"
-                  disabled={!postText.trim() && !mediaFile}
+                  disabled={!postText.trim() && mediaFiles.length === 0}
                   className="shrink-0 p-3 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 transition-all duration-200 flex items-center justify-center scale-95 hover:scale-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-95"
                 >
                   <Send size={20} />
@@ -464,6 +535,52 @@ export default function ChannelViewPage() {
           />
         )}
       </div>
+
+      {reactionPost && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setReactionPost(null)}
+        >
+          <div
+            className="absolute z-50"
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: reactionPost.x, top: reactionPost.y }}
+          >
+            <MediaPicker
+              onSelect={(item) => {
+                const value = item.value || item.url;
+                if (value) {
+                  handleReact(reactionPost.post.id, value);
+                  setReactionPost(null);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {menuPost && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setMenuPost(null)}
+        >
+          <div
+            className="absolute bg-white/10 backdrop-blur-md border border-white/10 rounded-xl px-2 py-1 shadow-2xl min-w-[160px]"
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: menuPost.x, top: menuPost.y }}
+          >
+            <button
+              className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+              onClick={() => {
+                setReactionPost({ post: menuPost.post, x: menuPost.x, y: menuPost.y });
+                setMenuPost(null);
+              }}
+            >
+              <Smile size={16} /> Добавить реакцию
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
