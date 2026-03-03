@@ -1,0 +1,199 @@
+// Prisma Schema для мессенджера
+// PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ ПОЛЬЗОВАТЕЛИ ============
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  email     String   @unique
+  password  String
+  avatar    String?
+  bio       String?
+  status    String   @default("offline") // online, offline, away
+  notificationSettings Json? // Заглушка: { emailNotifications, pushEnabled, etc. }
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Связи
+  messages        Message[]
+  reactions       Reaction[]
+  comments        Comment[]
+  posts           Post[]
+  userChats       UserChat[]
+  createdChannels Channel[] @relation("ChannelCreator")
+  channelMembers  ChannelMember[]
+  postReactions   PostReaction[]
+}
+
+// ============ ЧАТЫ (личные и групповые) ============
+model Chat {
+  id              String   @id @default(uuid())
+  isGroup         Boolean  @default(false)
+  name            String?  // Для групповых чатов
+  avatar          String?  // Аватар группового чата
+  pinnedMessageId String?
+  pinnedMessage   Message? @relation("PinnedMessage", fields: [pinnedMessageId], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  messages   Message[]
+  userChats  UserChat[]
+
+  @@index([pinnedMessageId])
+}
+
+// Связь пользователей с чатами (участники)
+model UserChat {
+  id        String   @id @default(uuid())
+  userId    String
+  chatId    String
+  role      String   @default("member") // member, admin
+  joinedAt  DateTime @default(now())
+  lastReadAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, chatId])
+  @@index([userId])
+  @@index([chatId])
+}
+
+// ============ СООБЩЕНИЯ ============
+model Message {
+  id        String   @id @default(uuid())
+  text      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  editedAt  DateTime?
+  isDeleted Boolean  @default(false)
+
+  senderId String
+  sender   User   @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  chatId   String
+  chat     Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  reactions Reaction[]
+  pinnedInChats Chat[] @relation("PinnedMessage")
+
+  @@index([chatId])
+  @@index([senderId])
+  @@index([createdAt])
+}
+
+// ============ КАНАЛЫ (публичные/приватные) ============
+model Channel {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  avatar      String?
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creatorId String
+  creator   User   @relation("ChannelCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  posts    Post[]
+  members  ChannelMember[]
+
+  @@index([slug])
+  @@index([creatorId])
+}
+
+// Участники канала
+model ChannelMember {
+  id        String   @id @default(uuid())
+  userId    String
+  channelId String
+  role      String   @default("member") // member, moderator, admin
+  joinedAt  DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelId])
+  @@index([userId])
+  @@index([channelId])
+}
+
+// ============ ПОСТЫ В КАНАЛАХ ============
+model Post {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  editedAt  DateTime?
+  isDeleted Boolean  @default(false)
+
+  authorId  String
+  author    User    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  channelId String
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  viewCount Int     @default(0)
+
+  comments  Comment[]
+  reactions PostReaction[]
+
+  @@index([channelId])
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+// ============ РЕАКЦИИ НА СООБЩЕНИЯ ============
+model Reaction {
+  id        String   @id @default(uuid())
+  emoji     String   // например: "👍", "❤️", "😂"
+  createdAt DateTime @default(now())
+
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageId String
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId, emoji])
+  @@index([messageId])
+}
+
+// ============ РЕАКЦИИ НА ПОСТЫ ============
+model PostReaction {
+  id        String   @id @default(uuid())
+  emoji     String
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId String
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId, emoji])
+  @@index([postId])
+}
+
+// ============ КОММЕНТАРИИ К ПОСТАМ ============
+model Comment {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  editedAt  DateTime?
+  isDeleted Boolean  @default(false)
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  postId   String
+  post     Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([authorId])
+}
