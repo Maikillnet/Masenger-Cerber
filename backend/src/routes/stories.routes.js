@@ -72,6 +72,17 @@ router.post('/', upload.single('media'), async (req, res) => {
     }
   }
 
+  let mediaSettings = null;
+  if (req.body.mediaSettings) {
+    try {
+      mediaSettings = typeof req.body.mediaSettings === 'string'
+        ? JSON.parse(req.body.mediaSettings)
+        : req.body.mediaSettings;
+    } catch {
+      mediaSettings = null;
+    }
+  }
+
   const caption = req.body.caption?.trim() || null;
 
   try {
@@ -83,6 +94,7 @@ router.post('/', upload.single('media'), async (req, res) => {
         authorId: req.user.id,
         caption,
         textSettings,
+        mediaSettings,
       },
       include: {
         author: { select: { id: true, username: true, avatar: true } },
@@ -145,6 +157,7 @@ router.get('/feed', async (req, res) => {
             views: true,
             caption: true,
             textSettings: true,
+            mediaSettings: true,
           },
         },
       },
@@ -176,6 +189,7 @@ router.get('/archive', async (req, res) => {
         views: true,
         caption: true,
         textSettings: true,
+        mediaSettings: true,
       },
     });
     res.json(stories);

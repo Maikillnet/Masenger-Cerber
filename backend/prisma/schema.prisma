@@ -211,17 +211,35 @@ model Comment {
   @@index([authorId])
 }
 
+// ============ СТИКЕРЫ ============
+model StickerPack {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  iconUrl   String    // Иконка самого набора
+  stickers  Sticker[]
+  createdAt DateTime  @default(now())
+}
+
+model Sticker {
+  id     String      @id @default(uuid())
+  url    String      // Путь к файлу стикера
+  packId String
+  pack   StickerPack @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@index([packId])
+}
+
 // ============ ИСТОРИИ (Stories) ============
 model Story {
   id        String   @id @default(uuid())
   mediaUrl  String
-  mediaType String   // 'image' или 'video'
+  mediaType String   @default("image") // 'image' или 'video'
+  caption   String?  @db.Text // текст подписи (оверлей)
+  textSettings Json?  // { x, y, color } — координаты и цвет
+  mediaSettings Json? // { stickers: [{ url, x, y }] } — стикеры поверх истории
+  views     Int      @default(0)
   createdAt DateTime @default(now())
   expiresAt DateTime // createdAt + 24 часа
-  views     Int      @default(0)
-
-  caption     String? @db.Text // текст подписи (оверлей)
-  textSettings Json?  // { x, y, color, fontSize, backgroundColor }
 
   authorId  String
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)

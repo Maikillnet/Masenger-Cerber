@@ -166,7 +166,7 @@ export async function getMessages(chatId, cursor = null) {
   return data;
 }
 
-export async function sendMessage(chatId, text, mediaFile = null, replyToId = null) {
+export async function sendMessage(chatId, text, mediaFile = null, replyToId = null, stickerUrl = null) {
   const token = localStorage.getItem('token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
@@ -179,7 +179,11 @@ export async function sendMessage(chatId, text, mediaFile = null, replyToId = nu
     body = formData;
   } else {
     headers['Content-Type'] = 'application/json';
-    body = JSON.stringify({ text: text || '', replyToId: replyToId || undefined });
+    body = JSON.stringify({
+      text: text || '',
+      replyToId: replyToId || undefined,
+      stickerUrl: stickerUrl || undefined,
+    });
   }
 
   const res = await fetch(`${API_BASE}/chats/${chatId}/messages`, {
@@ -189,6 +193,39 @@ export async function sendMessage(chatId, text, mediaFile = null, replyToId = nu
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка отправки');
+  return data;
+}
+
+export async function addReaction(chatId, messageId, emoji) {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/messages/${messageId}/reactions`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ emoji }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка реакции');
+  return data;
+}
+
+export async function reactToMessage(chatId, messageId, emoji) {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/messages/${messageId}/react`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ emoji }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка добавления реакции');
+  return data;
+}
+
+export async function removeMessageReaction(chatId, messageId, emoji) {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/messages/${messageId}/react`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+    body: JSON.stringify({ emoji }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка удаления реакции');
   return data;
 }
 
@@ -498,12 +535,15 @@ export async function getStoryFeed() {
   return data;
 }
 
-export async function uploadStory(file, textOverlay) {
+export async function uploadStory(file, textOverlay, mediaSettings) {
   const formData = new FormData();
   formData.append('media', file);
   if (textOverlay) {
     if (textOverlay.caption != null) formData.append('caption', textOverlay.caption);
     if (textOverlay.settings != null) formData.append('textSettings', JSON.stringify(textOverlay.settings));
+  }
+  if (mediaSettings) {
+    formData.append('mediaSettings', JSON.stringify(mediaSettings));
   }
   const res = await fetch(`${API_BASE}/stories`, {
     method: 'POST',
@@ -521,6 +561,13 @@ export async function getMyStoriesArchive() {
   const res = await fetch(`${API_BASE}/stories/archive`, { headers: getHeaders() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка загрузки архива историй');
+  return data;
+}
+
+export async function getStickers() {
+  const res = await fetch(`${API_BASE}/stickers`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка загрузки стикеров');
   return data;
 }
 

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -14,10 +14,13 @@ import {
   getUsers,
   pinMessage,
   unpinMessage,
+  reactToMessage,
+  removeMessageReaction,
   getStoryFeed,
   uploadStory,
 } from '../api';
 import GroupSettingsModal from '../components/GroupSettingsModal';
+import MediaPicker from '../components/MediaPicker';
 import StoryViewer from '../components/StoryViewer';
 import StoryPreviewModal from '../components/StoryPreviewModal';
 import StoryRing from '../components/StoryRing';
@@ -43,7 +46,7 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
     const q = searchQuery.toLowerCase();
     filtered = filtered.filter((chat) => {
       const name = chat.otherUser?.username || chat.name || '';
-      const preview = chat.lastMessage?.text || '';
+      const preview = chat.lastMessage?.content ?? chat.lastMessage?.text ?? '';
       return name.toLowerCase().includes(q) || preview.toLowerCase().includes(q);
     });
   }
@@ -100,9 +103,10 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
                   )}
                 </div>
                 <div className="text-sm text-gray-500 truncate mt-0.5">
-                  {chat.lastMessage?.text
-                    ? chat.lastMessage.text.slice(0, 40) + (chat.lastMessage.text.length > 40 ? '…' : '')
-                    : 'Нет сообщений'}
+                  {(() => {
+                    const txt = chat.lastMessage?.content ?? chat.lastMessage?.text ?? '';
+                    return txt ? txt.slice(0, 40) + (txt.length > 40 ? '…' : '') : 'Нет сообщений';
+                  })()}
                 </div>
               </div>
               {chat.unreadCount > 0 && (
@@ -118,15 +122,18 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
   );
 }
 
-function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onCloseSettings }) {
+function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onCloseSettings }) {
   const [text, setText] = useState('');
   const [mediaFile, setMediaFile] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [mediaPreview, setMediaPreview] = useState(null); // { url, type: 'image'|'video' }
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
+  const [reactionMsg, setReactionMsg] = useState(null); // { msg, x, y } для выбора реакции
   const messagesEndRef = useRef(null);
   const messageRefs = useRef({});
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const inputContainerRef = useRef(null);
   const [menuMsg, setMenuMsg] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMsg, setEditingMsg] = useState(null);
@@ -238,6 +245,18 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
     setMenuMsg({ msg, x: e.clientX, y: e.clientY });
   };
 
+  const handleEmojiSelect = useCallback((emoji) => {
+    const char = emoji?.value ?? emoji?.native ?? (typeof emoji === 'string' ? emoji : '');
+    if (char) setText((prev) => (prev || '') + char);
+  }, []);
+
+  const handleStickerSend = useCallback((stickerUrl) => {
+    if (!stickerUrl || !onSend) return;
+    onSend('', null, replyTo?.id, stickerUrl);
+    setShowMediaPicker(false);
+    setReplyTo(null);
+  }, [onSend, replyTo?.id]);
+
   if (!chat) {
     return (
       <div className="flex-1 flex items-center justify-center bg-white/5 backdrop-blur-md border-l border-white/10">
@@ -287,7 +306,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
           <span className="text-xs">📌</span>
           <div className="flex-1 min-w-0">
             <span className="text-xs text-blue-400 font-medium">{pinnedMessage.sender?.username}</span>
-            <span className="text-sm text-gray-300 truncate block">{pinnedMessage.text}</span>
+            <span className="text-sm text-gray-300 truncate block">{pinnedMessage.content ?? pinnedMessage.text}</span>
           </div>
         </button>
       )}
@@ -308,6 +327,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
             )}
             {messages.map((msg) => {
             const isOwn = msg.senderId === user?.id;
+            const isSticker = msg.mediaUrl && msg.mediaType === 'sticker' && !msg.isDeleted;
             return (
               <div
                 key={msg.id}
@@ -316,17 +336,60 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
                 className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
                 onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               >
+                {isSticker ? (
+                  <div className="flex flex-col items-center gap-1.5">
+                    <img src={msg.mediaUrl} alt="" className="w-48 h-48 object-contain" />
+                    <div className={`flex items-center gap-1.5 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
+                      <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                      {isOwn && (msg.isRead ? <CheckCheck className="w-4 h-4" /> : <Check className="w-4 h-4" />)}
+                    </div>
+                    {(() => {
+                      const groups = (msg.reactions || []).reduce((acc, r) => {
+                        const e = r.emoji || '';
+                        if (!acc[e]) acc[e] = { emoji: e, count: 0, userReacted: false };
+                        acc[e].count++;
+                        if (r.userId === user?.id) acc[e].userReacted = true;
+                        return acc;
+                      }, {});
+                      const list = Object.values(groups);
+                      if (list.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 justify-center mt-1">
+                          {list.map((g) => (
+                            <button
+                              key={g.emoji}
+                              type="button"
+                              onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
+                              className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                                g.userReacted
+                                  ? 'bg-blue-500/30 border-blue-500/50 text-white'
+                                  : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'
+                              }`}
+                            >
+                              {g.emoji.startsWith('/uploads') ? (
+                                <img src={g.emoji} alt="" className="w-6 h-6 object-contain" />
+                              ) : (
+                                <span>{g.emoji}</span>
+                              )}
+                              {g.count > 1 && <span>{g.count}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : (
                 <div
                   className={`max-w-[75%] rounded-2xl overflow-hidden shadow-lg p-4 ${
                     isOwn
                       ? 'bg-blue-600/80 backdrop-blur-sm rounded-tr-sm text-white'
-                      : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm'
+                      : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm text-gray-100'
                   }`}
                 >
                   {msg.replyTo && (
                     <div className={`mb-2 pl-2 border-l-2 ${isOwn ? 'border-blue-300/50' : 'border-white/30'}`}>
                       <span className="text-xs font-medium opacity-80">{msg.replyTo.sender?.username}</span>
-                      <p className="text-sm truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : msg.replyTo.text}</p>
+                      <p className="text-sm truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
                     </div>
                   )}
                   {msg.mediaUrl && msg.mediaType === 'image' && !msg.isDeleted && (
@@ -338,8 +401,44 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
                   {msg.isDeleted ? (
                     <div className="italic opacity-70">Сообщение удалено</div>
                   ) : (
-                    msg.text && <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+                    (msg.content || msg.text) && (
+                      <p className="whitespace-pre-wrap break-words text-inherit">{msg.content ?? msg.text}</p>
+                    )
                   )}
+                  {(() => {
+                    const groups = (msg.reactions || []).reduce((acc, r) => {
+                      const e = r.emoji || '';
+                      if (!acc[e]) acc[e] = { emoji: e, count: 0, userReacted: false };
+                      acc[e].count++;
+                      if (r.userId === user?.id) acc[e].userReacted = true;
+                      return acc;
+                    }, {});
+                    const list = Object.values(groups);
+                    if (list.length === 0) return null;
+                    return (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {list.map((g) => (
+                          <button
+                            key={g.emoji}
+                            type="button"
+                            onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
+                            className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                              g.userReacted
+                                ? 'bg-blue-500/30 border-blue-500/50 text-white'
+                                : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'
+                            }`}
+                          >
+                            {g.emoji.startsWith('/uploads') ? (
+                              <img src={g.emoji} alt="" className="w-6 h-6 object-contain" />
+                            ) : (
+                              <span>{g.emoji}</span>
+                            )}
+                            {g.count > 1 && <span>{g.count}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   <div className={`flex justify-end items-center gap-1 mt-1 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
                     <span>
                       {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
@@ -354,6 +453,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
                     )}
                   </div>
                 </div>
+                )}
               </div>
             );
           })}
@@ -361,6 +461,33 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {reactionMsg && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setReactionMsg(null)}
+        >
+          <div
+            className="absolute z-50"
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: reactionMsg.x, top: reactionMsg.y }}
+          >
+            <MediaPicker
+              onSelect={(item) => {
+                if (onAddReaction && chat?.id) {
+                  if (item.type === 'emoji') {
+                    onAddReaction(chat.id, reactionMsg.msg.id, item.value);
+                    setReactionMsg(null);
+                  } else if (item.type === 'sticker' && item.url) {
+                    onAddReaction(chat.id, reactionMsg.msg.id, item.url);
+                    setReactionMsg(null);
+                  }
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {menuMsg && (
         <div
@@ -377,6 +504,12 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
               onClick={() => { setReplyTo(menuMsg.msg); setMenuMsg(null); }}
             >
               Ответить
+            </button>
+            <button
+              className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+              onClick={() => { setReactionMsg({ msg: menuMsg.msg, x: menuMsg.x, y: menuMsg.y }); setMenuMsg(null); }}
+            >
+              Реакция
             </button>
             {menuMsg.msg?.senderId === user?.id && !menuMsg.msg?.isDeleted && (
               <>
@@ -433,7 +566,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
           <span className="text-sm text-gray-500">Редактирование:</span>
           <input
             type="text"
-            defaultValue={editingMsg.text}
+            defaultValue={editingMsg.content ?? editingMsg.text}
             className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white text-sm"
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -459,7 +592,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
         <div className="flex-shrink-0 mx-4 mb-2 p-3 rounded-xl bg-white/10 border-l-4 border-blue-500/50 flex items-center justify-between">
           <div className="min-w-0">
             <span className="text-xs text-blue-400 font-medium">{replyTo.sender?.username}</span>
-            <p className="text-sm text-gray-300 truncate">{replyTo.isDeleted ? 'Сообщение удалено' : replyTo.text}</p>
+            <p className="text-sm text-gray-300 truncate">{replyTo.isDeleted ? 'Сообщение удалено' : (replyTo.content ?? replyTo.text)}</p>
           </div>
           <button type="button" className="text-gray-400 hover:text-white ml-2" onClick={() => setReplyTo(null)}>×</button>
         </div>
@@ -483,7 +616,32 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
             </button>
           </div>
         )}
-        <div className="flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
+        <div ref={inputContainerRef} className="relative flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
+          {showMediaPicker && (
+            <>
+              <div
+                className="fixed inset-0 z-[100]"
+                onClick={() => setShowMediaPicker(false)}
+                aria-hidden="true"
+                style={{ backgroundColor: 'transparent' }}
+              />
+              <div
+                className="absolute bottom-full left-2 mb-2 z-[110]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MediaPicker
+                  onSelect={(item) => {
+                    if (!item) return;
+                    if (item.type === 'emoji') {
+                      handleEmojiSelect(item);
+                    } else if (item.type === 'sticker' && item.url) {
+                      handleStickerSend(item.url);
+                    }
+                  }}
+                />
+              </div>
+            </>
+          )}
           <button
             type="button"
             className="shrink-0 p-3 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition-all duration-200 cursor-pointer flex items-center justify-center"
@@ -491,6 +649,14 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, loading, loading
             title="Прикрепить файл"
           >
             <Paperclip size={20} />
+          </button>
+          <button
+            type="button"
+            className="shrink-0 p-3 rounded-full text-gray-400 hover:text-white hover:bg-white/10 transition-all duration-200 cursor-pointer flex items-center justify-center"
+            onClick={() => setShowMediaPicker((v) => !v)}
+            title="Эмодзи и стикеры"
+          >
+            <Smile size={20} />
           </button>
           <input
             ref={fileInputRef}
@@ -552,8 +718,8 @@ export default function ChatsPage() {
     return () => window.removeEventListener('story_viewed', handleView);
   }, []);
 
-  const handleConfirmStoryUpload = async (file, textOverlay) => {
-    await uploadStory(file, textOverlay);
+  const handleConfirmStoryUpload = async (file, textOverlay, mediaSettings) => {
+    await uploadStory(file, textOverlay, mediaSettings);
     setSelectedStoryFile(null);
     loadStoryFeed();
   };
@@ -610,7 +776,8 @@ export default function ChatsPage() {
             ...c,
             lastMessage: {
               id: message.id,
-              text: message.text,
+              text: message.content ?? message.text,
+              content: message.content ?? message.text,
               createdAt: message.createdAt,
               sender: message.sender,
             },
@@ -664,6 +831,36 @@ export default function ChatsPage() {
         setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
       }
     });
+    socket.on('message_reaction', (updated) => {
+      if (updated.chatId === selectedChat?.id) {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      }
+    });
+    socket.on('message_reaction_updated', (payload) => {
+      if (payload.chatId !== selectedChat?.id) return;
+      const { messageId, reaction, type } = payload;
+      if (!messageId) return;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== messageId) return m;
+          const reactions = m.reactions || [];
+          if (type === 'added' && reaction) {
+            if (reactions.some((r) => r.id === reaction.id || (r.userId === reaction.userId && r.emoji === reaction.emoji)))
+              return m;
+            return { ...m, reactions: [...reactions, reaction] };
+          }
+          if (type === 'removed' && reaction) {
+            return {
+              ...m,
+              reactions: reactions.filter(
+                (r) => !(r.userId === reaction.userId && (r.emoji === reaction.emoji || r.emoji === reaction.emoji?.trim()))
+              ),
+            };
+          }
+          return m;
+        })
+      );
+    });
     socket.on('new_story', () => {
       getStoryFeed().then(setStoryFeed).catch(console.error);
     });
@@ -676,6 +873,8 @@ export default function ChatsPage() {
       socket.off('typing_end');
       socket.off('message_edited');
       socket.off('message_deleted');
+      socket.off('message_reaction');
+      socket.off('message_reaction_updated');
       socket.off('new_story');
     };
   }, [socket, selectedChat?.id, user?.id]);
@@ -762,15 +961,52 @@ export default function ChatsPage() {
       .catch(console.error);
   };
 
-  const handleSendMessage = (text, mediaFile = null, replyToId = null) => {
+  const handleSendMessage = (text, mediaFile = null, replyToId = null, stickerUrl = null) => {
     if (!selectedChat) return;
-    if (!text?.trim() && !mediaFile) return;
-    sendMessage(selectedChat.id, text, mediaFile, replyToId)
+    if (!text?.trim() && !mediaFile && !stickerUrl) return;
+    sendMessage(selectedChat.id, text, mediaFile, replyToId, stickerUrl)
       .then((msg) => {
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
           return [...prev, msg];
         });
+      })
+      .catch(console.error);
+  };
+
+  const handleAddReaction = (chatId, messageId, emoji) => {
+    reactToMessage(chatId, messageId, emoji)
+      .then((reaction) => {
+        if (selectedChat?.id === chatId && reaction?.id) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId
+                ? { ...m, reactions: [...(m.reactions || []), { ...reaction, userId: reaction.userId }] }
+                : m
+            )
+          );
+        }
+      })
+      .catch(console.error);
+  };
+
+  const handleRemoveReaction = (chatId, messageId, emoji) => {
+    removeMessageReaction(chatId, messageId, emoji)
+      .then(() => {
+        if (selectedChat?.id === chatId) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    reactions: (m.reactions || []).filter(
+                      (r) => !(r.userId === user?.id && (r.emoji === emoji || r.emoji === emoji?.trim()))
+                    ),
+                  }
+                : m
+            )
+          );
+        }
       })
       .catch(console.error);
   };
@@ -973,6 +1209,8 @@ export default function ChatsPage() {
           onSend={handleSendMessage}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
+          onAddReaction={handleAddReaction}
+          onRemoveReaction={handleRemoveReaction}
           loading={messagesLoading}
           loadingMore={loadingMore}
           hasMore={messagesHasMore}

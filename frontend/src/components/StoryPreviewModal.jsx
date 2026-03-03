@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Type, Trash2, X, MoreVertical, Smile, Palette } from 'lucide-react';
+import { Send, Type, Trash2, X, MoreVertical, Smile } from 'lucide-react';
+import MediaPicker from './MediaPicker';
 
 const PRESET_COLORS = [
   { hex: '#ffffff', label: 'Белый' },
@@ -16,15 +17,22 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
   const [textColor, setTextColor] = useState('#ffffff');
   const [isEditingText, setIsEditingText] = useState(false);
   const [textPosition, setTextPosition] = useState({ x: 50, y: 50 }); // в процентах
+  const [stickers, setStickers] = useState([]); // [{ id, url, x, y }] — x,y в процентах
   const [isDragging, setIsDragging] = useState(false);
+  const [draggingStickerIndex, setDraggingStickerIndex] = useState(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
   const textInputRef = useRef(null);
   const containerRef = useRef(null);
   const isDraggingRef = useRef(false);
+  const draggingStickerIndexRef = useRef(null);
 
   useEffect(() => {
     isDraggingRef.current = isDragging;
   }, [isDragging]);
+  useEffect(() => {
+    draggingStickerIndexRef.current = draggingStickerIndex;
+  }, [draggingStickerIndex]);
 
   useEffect(() => {
     if (!file) return;
@@ -67,6 +75,34 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
     }
   }, []);
 
+  const handleStickerPointerDown = useCallback((index, e) => {
+    if (isEditingText) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDraggingStickerIndex(index);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [isEditingText]);
+
+  const handleStickerPointerMove = useCallback((e) => {
+    const idx = draggingStickerIndexRef.current;
+    if (idx == null || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    let newX = ((e.clientX - rect.left) / rect.width) * 100;
+    let newY = ((e.clientY - rect.top) / rect.height) * 100;
+    setStickers((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], x: Math.max(0, Math.min(newX, 100)), y: Math.max(0, Math.min(newY, 100)) };
+      return next;
+    });
+  }, []);
+
+  const handleStickerPointerUp = useCallback((e) => {
+    setDraggingStickerIndex(null);
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
+
   const handleConfirm = async () => {
     if (!file || isUploading) return;
     setIsUploading(true);
@@ -78,7 +114,10 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
           settings: { x: textPosition.x, y: textPosition.y, color: textColor },
         };
       }
-      await onConfirm(file, textOverlay);
+      const mediaSettings = stickers.length > 0
+        ? { stickers: stickers.map((s) => ({ url: s.url, x: s.x, y: s.y })) }
+        : null;
+      await onConfirm(file, textOverlay, mediaSettings);
       onClose?.();
     } catch (err) {
       alert(err?.message || 'Ошибка загрузки');
@@ -94,6 +133,10 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
   const handleClearText = () => {
     setStoryText('');
     setIsEditingText(false);
+  };
+
+  const handleClearStickers = () => {
+    setStickers([]);
   };
 
   if (!file) return null;
@@ -137,6 +180,25 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
                   <MoreVertical className="w-5 h-5" />
                 </button>
 
+                {showMediaPicker && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowMediaPicker(false)} aria-hidden="true" />
+                    <div className="absolute right-0 bottom-full mb-2 z-50">
+                      <MediaPicker
+                        stickersOnly
+                        onSelect={(item) => {
+                          if (item.type === 'sticker') {
+                            setStickers((prev) => [
+                              ...prev,
+                              { id: crypto.randomUUID(), url: item.url, x: 50, y: 50 },
+                            ]);
+                            setShowMediaPicker(false);
+                          }
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
                 {isMenuOpen && (
                   <div className="absolute right-0 mt-2 w-48 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in">
                     <button
@@ -151,10 +213,13 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setIsMenuOpen(false)}
-                      className="flex items-center gap-3 px-4 py-3 text-white/50 hover:bg-white/5 transition text-sm text-left cursor-not-allowed"
+                      onClick={() => {
+                        setShowMediaPicker(true);
+                        setIsMenuOpen(false);
+                      }}
+                      className="flex items-center gap-3 px-4 py-3 text-white hover:bg-white/10 transition text-sm text-left"
                     >
-                      <Smile className="w-4 h-4" /> Стикеры (Скоро)
+                      <Smile className="w-4 h-4 text-blue-400" /> Добавить стикер
                     </button>
                   </div>
                 )}
@@ -222,19 +287,49 @@ export default function StoryPreviewModal({ file, onClose, onConfirm }) {
                   {storyText}
                 </div>
               )}
+
+              {/* Перетаскиваемые стикеры */}
+              {!isEditingText && stickers.map((sticker, index) => (
+                <div
+                  key={sticker.id}
+                  className="absolute z-[60] cursor-grab active:cursor-grabbing select-none w-16 h-16 flex items-center justify-center"
+                  style={{
+                    left: `${sticker.x}%`,
+                    top: `${sticker.y}%`,
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                  onPointerDown={(e) => handleStickerPointerDown(index, e)}
+                  onPointerMove={handleStickerPointerMove}
+                  onPointerUp={handleStickerPointerUp}
+                >
+                  <img src={sticker.url} alt="" className="w-full h-full object-contain pointer-events-none" />
+                </div>
+              ))}
             </div>
 
-            {/* Панель очистки текста (когда текст есть и не редактируется) */}
-            {!isEditingText && storyText && (
-              <div className="absolute bottom-20 left-4 right-4 flex items-center justify-center">
-                <button
-                  type="button"
-                  onClick={handleClearText}
-                  className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-red-400 hover:bg-red-500/20 transition-all"
-                  title="Очистить текст"
-                >
-                  <Trash2 size={20} />
-                </button>
+            {/* Панель очистки текста и стикеров (когда есть и не редактируется) */}
+            {!isEditingText && (storyText || stickers.length > 0) && (
+              <div className="absolute bottom-20 left-4 right-4 flex items-center justify-center gap-2">
+                {storyText && (
+                  <button
+                    type="button"
+                    onClick={handleClearText}
+                    className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-red-400 hover:bg-red-500/20 transition-all"
+                    title="Очистить текст"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                )}
+                {stickers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearStickers}
+                    className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 text-red-400 hover:bg-red-500/20 transition-all"
+                    title="Очистить стикеры"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                )}
               </div>
             )}
 

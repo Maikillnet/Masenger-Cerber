@@ -11,6 +11,7 @@ import chatsRoutes from './src/routes/chats.routes.js';
 import channelsRoutes from './src/routes/channels.routes.js';
 import postsRoutes from './src/routes/posts.routes.js';
 import storiesRoutes from './src/routes/stories.routes.js';
+import stickersRoutes from './src/routes/stickers.routes.js';
 import { setupSocket } from './src/socket/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,7 @@ app.use('/api/chats', chatsRoutes);
 app.use('/api/channels', channelsRoutes);
 app.use('/api/posts', postsRoutes);
 app.use('/api/stories', storiesRoutes);
+app.use('/api/stickers', stickersRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

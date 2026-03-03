@@ -206,20 +206,41 @@ export default function StoryViewer({ users, initialUserIndex = 0, onClose }) {
           const parsed = !ts ? {} : typeof ts === 'string' ? (() => { try { return JSON.parse(ts); } catch { return {}; } })() : ts;
           return (
             <div
-              className="absolute z-50 text-center font-bold text-3xl custom-font drop-shadow-lg p-4 max-w-[200px]"
+              className="absolute z-50 pointer-events-none select-none text-center drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
               style={{
                 left: `${parsed.x ?? 50}%`,
                 top: `${parsed.y ?? 50}%`,
                 transform: 'translate(-50%, -50%)',
                 color: parsed.color || '#ffffff',
-                fontSize: parsed.fontSize || '20px',
-                fontWeight: parsed.fontWeight || '600',
+                fontSize: '1.5rem',
+                fontWeight: 'bold',
+                width: '80%',
+                wordWrap: 'break-word',
               }}
             >
               {currentStory.caption}
             </div>
           );
         })()}
+
+        {/* Стикеры поверх истории */}
+        {currentStory.mediaSettings?.stickers?.length > 0 && (
+          <>
+            {currentStory.mediaSettings.stickers.map((sticker, i) => (
+              <div
+                key={i}
+                className="absolute z-50 pointer-events-none w-16 h-16 flex items-center justify-center"
+                style={{
+                  left: `${sticker.x ?? 50}%`,
+                  top: `${sticker.y ?? 50}%`,
+                  transform: 'translate(-50%, -50%)',
+                }}
+              >
+                <img src={sticker.url} alt="" className="w-full h-full object-contain drop-shadow-lg" />
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );

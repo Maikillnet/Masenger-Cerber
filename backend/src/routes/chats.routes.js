@@ -328,6 +328,7 @@ router.get('/:id/messages', async (req, res) => {
         replyTo: {
           include: { sender: { select: { id: true, username: true } } },
         },
+        reactions: { include: { user: { select: { id: true, username: true } } } },
       },
     });
 
@@ -366,6 +367,9 @@ router.get('/:id/messages', async (req, res) => {
 
 // POST /api/chats/:id/messages — отправить сообщение (JSON или multipart с media)
 router.post('/:id/messages', (req, res, next) => {
+  // Для JSON (стикер) — пропускаем multer, body уже разобран express.json()
+  const isJson = req.headers['content-type']?.includes('application/json');
+  if (isJson) return next();
   uploadChatMedia.single('media')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
     next();
@@ -375,9 +379,10 @@ router.post('/:id/messages', (req, res, next) => {
     const text = (req.body.text || '').trim();
     const replyToId = req.body.replyToId || null;
     const hasMedia = !!req.file;
+    const stickerUrl = (req.body.stickerUrl || '').trim() || null;
 
-    if (!text && !hasMedia) {
-      return res.status(400).json({ error: 'Укажите текст или прикрепите файл' });
+    if (!text && !hasMedia && !stickerUrl) {
+      return res.status(400).json({ error: 'Укажите текст, прикрепите файл или выберите стикер' });
     }
 
     const chat = await prisma.chat.findFirst({
@@ -398,6 +403,9 @@ router.post('/:id/messages', (req, res, next) => {
     if (hasMedia) {
       messageData.mediaUrl = `/uploads/media/${req.file.filename}`;
       messageData.mediaType = getMediaType(req.file.filename);
+    } else if (stickerUrl) {
+      messageData.mediaUrl = stickerUrl;
+      messageData.mediaType = 'sticker';
     }
 
     let message;
@@ -409,6 +417,7 @@ router.post('/:id/messages', (req, res, next) => {
           replyTo: {
             include: { sender: { select: { id: true, username: true } } },
           },
+          reactions: { include: { user: { select: { id: true, username: true } } } },
         },
       });
 
@@ -427,11 +436,12 @@ router.post('/:id/messages', (req, res, next) => {
       throw createErr;
     }
 
-    // Рассылка сообщения обоим участникам чата через Socket.IO
+    // Рассылка сообщения всем участникам чата через Socket.IO (включая стикеры)
     const io = req.app.get('io');
     if (io) {
+      const payload = { ...message, chatId: req.params.id };
       const participantIds = chat.userChats.map((uc) => uc.userId);
-      participantIds.forEach((id) => io.to(id).emit('receive_message', message));
+      participantIds.forEach((id) => io.to(id).emit('receive_message', payload));
     }
 
     res.status(201).json(message);
@@ -518,6 +528,182 @@ router.delete('/:id/messages/:messageId', async (req, res) => {
   } catch (err) {
     console.error('Delete message error:', err);
     res.status(500).json({ error: 'Ошибка удаления' });
+  }
+});
+
+// POST /api/chats/:id/messages/:messageId/reactions — добавить/переключить реакцию (legacy)
+router.post('/:id/messages/:messageId/reactions', async (req, res) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji || typeof emoji !== 'string' || emoji.length > 10) {
+      return res.status(400).json({ error: 'Укажите emoji' });
+    }
+
+    const message = await prisma.message.findFirst({
+      where: {
+        id: req.params.messageId,
+        chatId: req.params.id,
+      },
+    });
+    if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const inChat = await prisma.userChat.findFirst({
+      where: { chatId: req.params.id, userId: req.user.id },
+    });
+    if (!inChat) return res.status(403).json({ error: 'Нет доступа к чату' });
+
+    const existing = await prisma.reaction.findUnique({
+      where: {
+        userId_messageId_emoji: {
+          userId: req.user.id,
+          messageId: req.params.messageId,
+          emoji: emoji.trim(),
+        },
+      },
+    });
+
+    if (existing) {
+      await prisma.reaction.delete({ where: { id: existing.id } });
+    } else {
+      await prisma.reaction.create({
+        data: {
+          userId: req.user.id,
+          messageId: req.params.messageId,
+          emoji: emoji.trim(),
+        },
+      });
+    }
+
+    const updated = await prisma.message.findUnique({
+      where: { id: req.params.messageId },
+      include: {
+        sender: { select: { id: true, username: true, avatar: true } },
+        replyTo: { include: { sender: { select: { id: true, username: true } } } },
+        reactions: { include: { user: { select: { id: true, username: true } } } },
+      },
+    });
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: req.params.id },
+      include: { userChats: { select: { userId: true } } },
+    });
+    const io = req.app.get('io');
+    if (io && chat) {
+      chat.userChats.forEach((uc) => io.to(uc.userId).emit('message_reaction', updated));
+    }
+    res.json(updated);
+  } catch (err) {
+    console.error('Reaction error:', err);
+    res.status(500).json({ error: 'Ошибка реакции' });
+  }
+});
+
+// POST /api/chats/:id/messages/:messageId/react — добавление реакции (upsert)
+router.post('/:id/messages/:messageId/react', async (req, res) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji || typeof emoji !== 'string' || (typeof emoji === 'string' && emoji.trim().length === 0) || emoji.length > 100) {
+      return res.status(400).json({ error: 'Укажите emoji или ссылку на стикер' });
+    }
+    const emojiVal = typeof emoji === 'string' ? emoji.trim() : String(emoji);
+
+    const inChat = await prisma.userChat.findFirst({
+      where: { chatId: req.params.id, userId: req.user.id },
+    });
+    if (!inChat) return res.status(403).json({ error: 'Нет доступа к чату' });
+
+    const message = await prisma.message.findFirst({
+      where: { id: req.params.messageId, chatId: req.params.id },
+    });
+    if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const reaction = await prisma.reaction.upsert({
+      where: {
+        userId_messageId_emoji: {
+          userId: req.user.id,
+          messageId: req.params.messageId,
+          emoji: emojiVal,
+        },
+      },
+      update: {},
+      create: {
+        userId: req.user.id,
+        messageId: req.params.messageId,
+        emoji: emojiVal,
+      },
+      include: { user: { select: { id: true, username: true } } },
+    });
+
+    const chat = await prisma.chat.findUnique({
+      where: { id: req.params.id },
+      include: { userChats: true },
+    });
+    const io = req.app.get('io');
+    if (io && chat) {
+      chat.userChats.forEach((uc) =>
+        io.to(uc.userId).emit('message_reaction_updated', {
+          messageId: req.params.messageId,
+          chatId: req.params.id,
+          reaction,
+          type: 'added',
+        })
+      );
+    }
+    res.json(reaction);
+  } catch (err) {
+    console.error('React add error:', err);
+    res.status(500).json({ error: 'Ошибка реакции' });
+  }
+});
+
+// DELETE /api/chats/:id/messages/:messageId/react — удаление реакции
+router.delete('/:id/messages/:messageId/react', async (req, res) => {
+  try {
+    const { emoji } = req.body;
+    if (!emoji || typeof emoji !== 'string' || (typeof emoji === 'string' && emoji.trim().length === 0) || emoji.length > 100) {
+      return res.status(400).json({ error: 'Укажите emoji' });
+    }
+    const emojiVal = typeof emoji === 'string' ? emoji.trim() : String(emoji);
+
+    const inChat = await prisma.userChat.findFirst({
+      where: { chatId: req.params.id, userId: req.user.id },
+    });
+    if (!inChat) return res.status(403).json({ error: 'Нет доступа к чату' });
+
+    const reaction = await prisma.reaction.findUnique({
+      where: {
+        userId_messageId_emoji: {
+          userId: req.user.id,
+          messageId: req.params.messageId,
+          emoji: emojiVal,
+        },
+      },
+      include: { user: { select: { id: true, username: true } } },
+    });
+
+    if (reaction) {
+      await prisma.reaction.delete({ where: { id: reaction.id } });
+    }
+
+    const chat = await prisma.chat.findUnique({
+      where: { id: req.params.id },
+      include: { userChats: true },
+    });
+    const io = req.app.get('io');
+    if (io && chat) {
+      chat.userChats.forEach((uc) =>
+        io.to(uc.userId).emit('message_reaction_updated', {
+          messageId: req.params.messageId,
+          chatId: req.params.id,
+          reaction: reaction || { userId: req.user.id, emoji: emojiVal },
+          type: 'removed',
+        })
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('React remove error:', err);
+    res.status(500).json({ error: 'Ошибка' });
   }
 });
 
