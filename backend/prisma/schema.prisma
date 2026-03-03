@@ -220,6 +220,9 @@ model Story {
   expiresAt DateTime // createdAt + 24 часа
   views     Int      @default(0)
 
+  caption     String? @db.Text // текст подписи (оверлей)
+  textSettings Json?  // { x, y, color, fontSize, backgroundColor }
+
   authorId  String
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
 

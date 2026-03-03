@@ -18,29 +18,24 @@ if (!fs.existsSync(STORIES_DIR)) {
   fs.mkdirSync(STORIES_DIR, { recursive: true });
 }
 
-const storiesStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, STORIES_DIR),
-  filename: (req, file, cb) => {
-    if (!req.user?.id) {
-      return cb(new Error('Требуется авторизация'));
-    }
-    const ext = path.extname(file.originalname) || '.jpg';
-    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.mp4'];
-    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
-    cb(null, `${req.user.id}-${Date.now()}${safeExt}`);
-  },
-});
-
-const uploadStory = multer({
-  storage: storiesStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB (подходит для вертикального видео)
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, STORIES_DIR),
+    filename: (req, file, cb) => {
+      if (!req.user?.id) {
+        return cb(new Error('Требуется авторизация'));
+      }
+      const ext = path.extname(file.originalname) || '.jpg';
+      const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.mp4'];
+      const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+      cb(null, `${req.user.id}-${Date.now()}${safeExt}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = /\.(jpg|jpeg|png|webp|mp4)$/i;
-    if (allowed.test(file.originalname)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Разрешены: jpg, png, webp, mp4'));
-    }
+    if (allowed.test(file.originalname)) cb(null, true);
+    else cb(new Error('Разрешены: jpg, png, webp, mp4'));
   },
 });
 
@@ -53,15 +48,8 @@ function getMediaType(filename) {
 
 router.use(authenticateToken);
 
-// POST /api/stories — загрузка истории
-router.post('/', (req, res, next) => {
-  uploadStory.single('media')(req, res, (err) => {
-    if (err) {
-      return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
-    }
-    next();
-  });
-}, async (req, res) => {
+// POST /api/stories — загрузка истории (фронт: formData.append('media', file))
+router.post('/', upload.single('media'), async (req, res) => {
   if (!req.user?.id) {
     return res.status(401).json({ error: 'Требуется авторизация' });
   }
@@ -73,6 +61,19 @@ router.post('/', (req, res, next) => {
   const mediaType = getMediaType(req.file.filename);
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+  let textSettings = null;
+  if (req.body.textSettings) {
+    try {
+      textSettings = typeof req.body.textSettings === 'string'
+        ? JSON.parse(req.body.textSettings)
+        : req.body.textSettings;
+    } catch {
+      textSettings = null;
+    }
+  }
+
+  const caption = req.body.caption?.trim() || null;
+
   try {
     const story = await prisma.story.create({
       data: {
@@ -80,15 +81,16 @@ router.post('/', (req, res, next) => {
         mediaType,
         expiresAt,
         authorId: req.user.id,
+        caption,
+        textSettings,
       },
       include: {
         author: { select: { id: true, username: true, avatar: true } },
       },
     });
 
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('new_story', story);
+    if (req.app.get('io')) {
+      req.app.get('io').emit('new_story', story);
     }
 
     res.status(201).json(story);
@@ -105,7 +107,18 @@ router.post('/', (req, res, next) => {
   }
 });
 
-// GET /api/stories/feed — лента активных историй (пользователи с неистёкшими историями)
+// Multer error handler (fileFilter, limits, etc.)
+router.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+  }
+  if (err) {
+    return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+  }
+  next();
+});
+
+// GET /api/stories/feed — массив пользователей, у каждого внутри массив stories
 router.get('/feed', async (req, res) => {
   try {
     const now = new Date();
@@ -130,6 +143,8 @@ router.get('/feed', async (req, res) => {
             createdAt: true,
             expiresAt: true,
             views: true,
+            caption: true,
+            textSettings: true,
           },
         },
       },
@@ -146,14 +161,23 @@ router.get('/feed', async (req, res) => {
   }
 });
 
-// GET /api/stories/archive — архив историй текущего пользователя (включая протухшие)
+// GET /api/stories/archive — архив историй текущего пользователя
 router.get('/archive', async (req, res) => {
   try {
     const stories = await prisma.story.findMany({
       where: { authorId: req.user.id },
       orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        mediaUrl: true,
+        mediaType: true,
+        createdAt: true,
+        expiresAt: true,
+        views: true,
+        caption: true,
+        textSettings: true,
+      },
     });
-
     res.json(stories);
   } catch (err) {
     console.error('Stories archive error:', err);
@@ -161,7 +185,7 @@ router.get('/archive', async (req, res) => {
   }
 });
 
-// DELETE /api/stories/:id — удаление истории (только автор)
+// DELETE /api/stories/:id
 router.delete('/:id', async (req, res) => {
   try {
     const story = await prisma.story.findFirst({
@@ -171,9 +195,7 @@ router.delete('/:id', async (req, res) => {
 
     const filePath = path.join(__dirname, '../..', story.mediaUrl.replace(/^\//, ''));
     if (fs.existsSync(filePath)) {
-      fs.unlink(filePath, (err) => {
-        if (err) console.error('Failed to delete story file:', err);
-      });
+      fs.unlinkSync(filePath);
     }
 
     await prisma.story.delete({ where: { id: req.params.id } });

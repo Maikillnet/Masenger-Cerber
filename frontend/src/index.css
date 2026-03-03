@@ -51,6 +51,10 @@ body {
   background: rgba(148, 163, 184, 0.5);
 }
 
+.custom-font {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
 .no-scrollbar {
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -65,6 +69,14 @@ body {
 }
 .animate-slide-in-right {
   animation: slide-in-right 0.25s ease-out forwards;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out forwards;
 }
 
 a {

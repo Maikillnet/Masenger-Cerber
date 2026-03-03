@@ -79,6 +79,17 @@ export default function StoryViewer({ users, initialUserIndex = 0, onClose }) {
     };
   }, [currentUserIndex, currentStoryIndex, currentStory?.id]);
 
+  useEffect(() => {
+    if (currentStory) {
+      const seen = JSON.parse(localStorage.getItem('seenStories') || '[]');
+      if (!seen.includes(currentStory.id)) {
+        seen.push(currentStory.id);
+        localStorage.setItem('seenStories', JSON.stringify(seen));
+        window.dispatchEvent(new Event('story_viewed'));
+      }
+    }
+  }, [currentStory]);
+
   const goNextRef = useRef(goNext);
   const goPrevRef = useRef(goPrev);
   goNextRef.current = goNext;
@@ -188,6 +199,27 @@ export default function StoryViewer({ users, initialUserIndex = 0, onClose }) {
             />
           )}
         </div>
+
+        {/* Текстовая подпись (оверлей) */}
+        {currentStory.caption && (() => {
+          const ts = currentStory.textSettings;
+          const parsed = !ts ? {} : typeof ts === 'string' ? (() => { try { return JSON.parse(ts); } catch { return {}; } })() : ts;
+          return (
+            <div
+              className="absolute z-50 text-center font-bold text-3xl custom-font drop-shadow-lg p-4 max-w-[200px]"
+              style={{
+                left: `${parsed.x ?? 50}%`,
+                top: `${parsed.y ?? 50}%`,
+                transform: 'translate(-50%, -50%)',
+                color: parsed.color || '#ffffff',
+                fontSize: parsed.fontSize || '20px',
+                fontWeight: parsed.fontWeight || '600',
+              }}
+            >
+              {currentStory.caption}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

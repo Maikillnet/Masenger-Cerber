@@ -19,6 +19,8 @@ import {
 } from '../api';
 import GroupSettingsModal from '../components/GroupSettingsModal';
 import StoryViewer from '../components/StoryViewer';
+import StoryPreviewModal from '../components/StoryPreviewModal';
+import StoryRing from '../components/StoryRing';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
@@ -541,6 +543,20 @@ export default function ChatsPage() {
   const [storyFeed, setStoryFeed] = useState([]);
   const storyFileInputRef = useRef(null);
   const [storyViewer, setStoryViewer] = useState(null); // { initialUserIndex }
+  const [selectedStoryFile, setSelectedStoryFile] = useState(null);
+  const [, setForceRender] = useState(0);
+
+  useEffect(() => {
+    const handleView = () => setForceRender((prev) => prev + 1);
+    window.addEventListener('story_viewed', handleView);
+    return () => window.removeEventListener('story_viewed', handleView);
+  }, []);
+
+  const handleConfirmStoryUpload = async (file, textOverlay) => {
+    await uploadStory(file, textOverlay);
+    setSelectedStoryFile(null);
+    loadStoryFeed();
+  };
 
   const loadStoryFeed = () => {
     getStoryFeed().then(setStoryFeed).catch(console.error);
@@ -840,44 +856,47 @@ export default function ChatsPage() {
           <div className="flex items-center gap-3 px-3 py-4 overflow-x-auto no-scrollbar border-b border-white/5 -mx-3 -mb-3">
             <button
               type="button"
-              onClick={() => {
-                const myIdx = storyFeed.findIndex((u) => u.id === user?.id);
-                if (myIdx >= 0) {
-                  setStoryViewer({ initialUserIndex: myIdx });
-                } else {
-                  storyFileInputRef.current?.click();
-                }
-              }}
-              className="flex-shrink-0 flex flex-col items-center gap-1.5 cursor-pointer group"
+              onClick={() => storyFileInputRef.current?.click()}
+              className="flex flex-col items-center gap-1 cursor-pointer group shrink-0"
             >
-              <div className="relative w-14 h-14 rounded-full overflow-hidden">
-                <div className="w-full h-full bg-blue-500/30 flex items-center justify-center border-2 border-slate-900">
-                  {user?.avatar ? (
-                    <img src={user.avatar} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-white font-medium text-lg">{user?.username?.[0]?.toUpperCase() || '?'}</span>
-                  )}
-                </div>
-                <div className="absolute bottom-0 right-0 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center border-2 border-slate-900">
-                  <Plus size={12} strokeWidth={2.5} className="text-white" />
-                </div>
+              <div className="relative w-16 h-16 rounded-full flex items-center justify-center border-2 border-dashed border-gray-600 group-hover:border-blue-500 group-hover:bg-blue-500/10 transition-all duration-300 bg-slate-800/50">
+                <Plus className="w-6 h-6 text-gray-400 group-hover:text-blue-400" />
               </div>
-              <span className="text-xs text-gray-500 truncate max-w-[56px]">Моя история</span>
+              <span className="text-xs text-gray-400 group-hover:text-blue-400 font-medium">Добавить</span>
             </button>
             <input
               ref={storyFileInputRef}
               type="file"
-              accept="image/jpeg,image/png,image/webp,video/mp4"
+              accept="image/*,video/mp4"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (!file) return;
-                uploadStory(file)
-                  .then(() => loadStoryFeed())
-                  .catch((err) => alert(err.message || 'Ошибка загрузки'))
-                  .finally(() => { e.target.value = ''; });
+                if (file) setSelectedStoryFile(file);
+                e.target.value = '';
               }}
             />
+            {storyFeed.findIndex((u) => u.id === user?.id) >= 0 && (() => {
+              const myUser = storyFeed.find((u) => u.id === user?.id);
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const myIdx = storyFeed.findIndex((u) => u.id === user?.id);
+                    if (myIdx >= 0) setStoryViewer({ initialUserIndex: myIdx });
+                  }}
+                  className="flex-shrink-0 flex flex-col items-center gap-1.5 cursor-pointer"
+                >
+                  <StoryRing
+                    user={myUser}
+                    onClick={() => {
+                      const myIdx = storyFeed.findIndex((u) => u.id === user?.id);
+                      if (myIdx >= 0) setStoryViewer({ initialUserIndex: myIdx });
+                    }}
+                  />
+                  <span className="text-xs text-gray-500 truncate max-w-[56px]">Моя история</span>
+                </button>
+              );
+            })()}
             {storyFeed.filter((u) => u.id !== user?.id).map((u) => (
               <button
                 key={u.id}
@@ -888,17 +907,13 @@ export default function ChatsPage() {
                 }}
                 className="flex-shrink-0 flex flex-col items-center gap-1.5 cursor-pointer"
               >
-                <div className="p-[2px] bg-gradient-to-tr from-blue-500 to-purple-500 rounded-full">
-                  <div className="w-14 h-14 rounded-full overflow-hidden border-2 border-slate-900 bg-slate-900">
-                    {u.avatar ? (
-                      <img src={u.avatar} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="w-full h-full flex items-center justify-center text-gray-400 font-medium text-lg">
-                        {u.username?.[0]?.toUpperCase() || '?'}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                <StoryRing
+                  user={u}
+                  onClick={() => {
+                    const idx = storyFeed.findIndex((x) => x.id === u.id);
+                    if (idx >= 0) setStoryViewer({ initialUserIndex: idx });
+                  }}
+                />
                 <span className="text-xs text-gray-500 truncate max-w-[56px]">{u.username || 'Пользователь'}</span>
               </button>
             ))}
@@ -1070,6 +1085,14 @@ export default function ChatsPage() {
             </button>
           </div>
         </div>
+      )}
+
+      {selectedStoryFile && (
+        <StoryPreviewModal
+          file={selectedStoryFile}
+          onClose={() => setSelectedStoryFile(null)}
+          onConfirm={handleConfirmStoryUpload}
+        />
       )}
     </div>
   );

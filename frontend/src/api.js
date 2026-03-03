@@ -498,9 +498,13 @@ export async function getStoryFeed() {
   return data;
 }
 
-export async function uploadStory(file) {
+export async function uploadStory(file, textOverlay) {
   const formData = new FormData();
   formData.append('media', file);
+  if (textOverlay) {
+    if (textOverlay.caption != null) formData.append('caption', textOverlay.caption);
+    if (textOverlay.settings != null) formData.append('textSettings', JSON.stringify(textOverlay.settings));
+  }
   const res = await fetch(`${API_BASE}/stories`, {
     method: 'POST',
     headers: {
