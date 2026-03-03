@@ -9,7 +9,11 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const STORIES_DIR = path.join(__dirname, '../../uploads/stories');
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+const STORIES_DIR = path.join(UPLOADS_DIR, 'stories');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 if (!fs.existsSync(STORIES_DIR)) {
   fs.mkdirSync(STORIES_DIR, { recursive: true });
 }
@@ -17,6 +21,9 @@ if (!fs.existsSync(STORIES_DIR)) {
 const storiesStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, STORIES_DIR),
   filename: (req, file, cb) => {
+    if (!req.user?.id) {
+      return cb(new Error('Требуется авторизация'));
+    }
     const ext = path.extname(file.originalname) || '.jpg';
     const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.mp4'];
     const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
@@ -47,16 +54,26 @@ function getMediaType(filename) {
 router.use(authenticateToken);
 
 // POST /api/stories — загрузка истории
-router.post('/', uploadStory.single('media'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Прикрепите медиафайл (image или video)' });
+router.post('/', (req, res, next) => {
+  uploadStory.single('media')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
     }
+    next();
+  });
+}, async (req, res) => {
+  if (!req.user?.id) {
+    return res.status(401).json({ error: 'Требуется авторизация' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'Прикрепите медиафайл (image или video)' });
+  }
 
-    const mediaUrl = `/uploads/stories/${req.file.filename}`;
-    const mediaType = getMediaType(req.file.filename);
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const mediaUrl = `/uploads/stories/${req.file.filename}`;
+  const mediaType = getMediaType(req.file.filename);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+  try {
     const story = await prisma.story.create({
       data: {
         mediaUrl,
@@ -76,10 +93,12 @@ router.post('/', uploadStory.single('media'), async (req, res) => {
 
     res.status(201).json(story);
   } catch (err) {
-    if (req.file?.path && fs.existsSync(req.file.path)) {
-      fs.unlink(req.file.path, (unlinkErr) => {
-        if (unlinkErr) console.error('Failed to delete uploaded file:', unlinkErr);
-      });
+    try {
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+    } catch (unlinkErr) {
+      console.error('Failed to delete uploaded file:', unlinkErr);
     }
     console.error('Story upload error:', err);
     res.status(500).json({ error: 'Ошибка загрузки истории' });

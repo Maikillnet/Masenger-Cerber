@@ -503,7 +503,9 @@ export async function uploadStory(file) {
   formData.append('media', file);
   const res = await fetch(`${API_BASE}/stories`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${getToken()}` },
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+    },
     body: formData,
   });
   const data = await res.json();
