@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X, ChevronLeft, ChevronRight, MessageCircle, Eye } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X, ChevronLeft, ChevronRight, MessageCircle, Eye, LogOut } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -27,9 +27,9 @@ import {
   getPostComments,
   addComment,
   reactToPost,
+  unsubscribeChannel,
 } from '../api';
 
-import { REACTION_EMOJIS } from '../constants/emojis';
 
 import GroupSettingsModal from '../components/GroupSettingsModal';
 import ChannelSettingsModal from '../components/ChannelSettingsModal';
@@ -404,7 +404,7 @@ function PostCommentsInline({ post, socket, onClose }) {
   );
 }
 
-function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, onSendPost, onPostReact, onJoinChannel, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onUpdateChannel, onCloseSettings, onCloseChannel, onOpenMediaViewer }) {
+function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, onSendPost, onPostReact, onJoinChannel, onUnsubscribeChannel, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onUpdateChannel, onCloseSettings, onCloseChannel, onOpenMediaViewer }) {
   const [text, setText] = useState('');
   const [mediaFiles, setMediaFiles] = useState([]); // [{ file, url, type }]
   const [showSettings, setShowSettings] = useState(false);
@@ -416,6 +416,8 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   const fileInputRef = useRef(null);
   const inputContainerRef = useRef(null);
   const [menuMsg, setMenuMsg] = useState(null);
+  const [menuPost, setMenuPost] = useState(null);
+  const [reactionPost, setReactionPost] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editingMsg, setEditingMsg] = useState(null);
   const [expandedPostId, setExpandedPostId] = useState(null);
@@ -587,6 +589,11 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
     setMenuMsg({ msg, x: e.clientX, y: e.clientY });
   };
 
+  const handlePostContextMenu = (e, post) => {
+    e.preventDefault();
+    setMenuPost({ post, x: e.clientX, y: e.clientY });
+  };
+
   const handleEmojiSelect = useCallback((emoji) => {
     const char = emoji?.value ?? emoji?.native ?? (typeof emoji === 'string' ? emoji : '');
     if (char) setText((prev) => (prev || '') + char);
@@ -632,14 +639,35 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
           <div className="font-medium text-gray-100 truncate">{name}</div>
           <div className="text-sm text-gray-500 truncate">{status}</div>
         </div>
-        {(chat?.isGroup || (channel && (channel.creatorId === user?.id || channel.isAdmin))) && (
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
-            title={channel ? 'Настройки канала' : 'Настройки группы'}
-          >
-            <Settings size={20} />
-          </button>
+        {(chat?.isGroup || channel) && (
+          <>
+            {channel?.isMember && (
+              <button
+                onClick={async () => {
+                  if (!confirm('Отписаться от канала?')) return;
+                  try {
+                    await onUnsubscribeChannel?.();
+                  } catch (e) {
+                    console.error(e);
+                    alert(e.message || 'Ошибка отписки');
+                  }
+                }}
+                className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-red-400 transition-all"
+                title="Отписаться от канала"
+              >
+                <LogOut size={20} />
+              </button>
+            )}
+            {((chat?.isGroup && (chat.creatorId === user?.id || chat.isAdmin)) || (channel && channel.isMember)) && (
+              <button
+                onClick={() => setShowSettings(true)}
+                className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
+                title={channel ? 'Настройки канала' : 'Настройки группы'}
+              >
+                <Settings size={20} />
+              </button>
+            )}
+          </>
         )}
       </header>
 
@@ -675,7 +703,10 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 const isExpanded = expandedPostId === post.id;
                 return (
                   <div key={post.id} className="w-full flex justify-center">
-                    <div className="w-full max-w-[100%] rounded-2xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/5 shadow-xl">
+                    <div
+                      className="w-full max-w-[100%] rounded-2xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/5 shadow-xl"
+                      onContextMenu={(e) => handlePostContextMenu(e, post)}
+                    >
                       {mediaUrls.length > 0 && (
                         <div className="relative w-full">
                           <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
@@ -696,19 +727,31 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                             </button>
                           </div>
                         )}
-                        <div className="flex flex-wrap items-center gap-3 mb-3">
-                          {REACTION_EMOJIS.map((emoji) => (
-                            <button
-                              key={emoji}
-                              onClick={() => onPostReact?.(post.id, emoji)}
-                              className={`px-2.5 py-1 rounded-lg text-sm transition-all ${
-                                userReacted === emoji ? 'bg-blue-500/30 text-blue-300' : 'bg-white/5 text-gray-400 hover:text-gray-200 hover:bg-white/10'
-                              }`}
-                            >
-                              {emoji}{counts[emoji] ? ` ${counts[emoji]}` : ''}
-                            </button>
-                          ))}
-                        </div>
+                        {Object.entries(counts).filter(([, c]) => c > 0).length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1 mb-3">
+                            {Object.entries(counts)
+                              .filter(([, c]) => c > 0)
+                              .map(([emoji, count]) => (
+                                <button
+                                  key={emoji}
+                                  onClick={() => onPostReact?.(post.id, emoji)}
+                                  className={`px-2 py-0.5 rounded-full text-sm transition-all border ${
+                                    userReacted === emoji
+                                      ? 'bg-blue-500/30 text-blue-300 border-blue-500/50'
+                                      : 'bg-white/10 backdrop-blur-sm border-white/10 text-gray-300 hover:bg-white/15 hover:text-gray-100'
+                                  }`}
+                                  title={emoji}
+                                >
+                                  {(emoji.startsWith('/uploads') || emoji.startsWith('http')) ? (
+                                    <img src={emoji} alt="" className="w-5 h-5 inline object-contain" />
+                                  ) : (
+                                    emoji
+                                  )}
+                                  {count > 0 && <span className="ml-0.5">{count}</span>}
+                                </button>
+                              ))}
+                          </div>
+                        )}
                         <div className="flex items-center justify-between gap-2">
                           <button
                             onClick={() => setExpandedPostId((p) => (p === post.id ? null : post.id))}
@@ -978,6 +1021,52 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 }
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {reactionPost && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setReactionPost(null)}
+        >
+          <div
+            className="absolute z-50"
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: reactionPost.x, top: reactionPost.y }}
+          >
+            <MediaPicker
+              onSelect={(item) => {
+                const value = item.value || item.url;
+                if (value && onPostReact) {
+                  onPostReact(reactionPost.post.id, value);
+                  setReactionPost(null);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {menuPost && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setMenuPost(null)}
+        >
+          <div
+            className="absolute bg-white/10 backdrop-blur-md border border-white/10 rounded-xl px-2 py-1 shadow-2xl min-w-[160px]"
+            onClick={(e) => e.stopPropagation()}
+            style={{ left: menuPost.x, top: menuPost.y }}
+          >
+            <button
+              className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+              onClick={() => {
+                setReactionPost({ post: menuPost.post, x: menuPost.x, y: menuPost.y });
+                setMenuPost(null);
+              }}
+            >
+              <Smile size={16} /> Добавить реакцию
+            </button>
           </div>
         </div>
       )}
@@ -1732,15 +1821,21 @@ export default function ChatsPage() {
         />
       )}
       <aside className="w-[30%] min-w-[260px] max-w-[400px] flex flex-col bg-white/5 backdrop-blur-md border-r border-white/10 shadow-2xl">
-        <header className="flex-shrink-0 p-3 border-b border-white/10 flex flex-col gap-3">
+        <header className="flex-shrink-0 h-auto p-3 border-b border-white/10 flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <Link
               to="/cabinet"
-              className="flex items-center justify-center w-10 h-10 rounded-lg bg-black/40 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-gray-200 transition-all flex-shrink-0"
+              className="flex items-center justify-center w-10 h-10 rounded-full overflow-hidden bg-black/40 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-gray-200 transition-all flex-shrink-0"
               title="Профиль"
               aria-label="Профиль"
             >
-              <User size={20} />
+              {user?.avatar ? (
+                <img src={user.avatar} alt="" className="w-full h-full object-cover" />
+              ) : user?.username ? (
+                <span className="text-sm font-medium text-gray-200">{user.username[0].toUpperCase()}</span>
+              ) : (
+                <User size={20} />
+              )}
             </Link>
             <input
               type="search"
@@ -1751,7 +1846,7 @@ export default function ChatsPage() {
             />
           </div>
 
-          <div className="flex items-center gap-3 px-3 py-4 overflow-x-auto no-scrollbar border-b border-white/5 -mx-3 -mb-3">
+          <div className="flex items-center gap-3 px-3 py-4 overflow-x-auto no-scrollbar border-b border-white/5">
             <button
               type="button"
               onClick={() => storyFileInputRef.current?.click()}
@@ -1817,38 +1912,39 @@ export default function ChatsPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-1 flex-1 overflow-x-auto no-scrollbar min-w-0">
-            <button
-              onClick={() => { setChatFilter('personal'); setSelectedChannel(null); }}
-              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
-                chatFilter === 'personal'
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-              }`}
-            >
-              Личные
-            </button>
-            <button
-              onClick={() => { setChatFilter('group'); setSelectedChannel(null); }}
-              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
-                chatFilter === 'group'
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-              }`}
-            >
-              Группы
-            </button>
-            <button
-              onClick={() => { setChatFilter('channels'); setSelectedChat(null); }}
-              className={`px-3 py-1.5 text-sm font-medium rounded-xl transition-all flex-shrink-0 ${
-                chatFilter === 'channels'
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-              }`}
-            >
-              Каналы
-            </button>
-            <div className="flex-1 min-w-2" />
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 p-1 bg-black/20 backdrop-blur-md rounded-2xl border border-white/5 overflow-x-auto no-scrollbar flex-1 min-w-0">
+              <button
+                onClick={() => { setChatFilter('personal'); setSelectedChannel(null); }}
+                className={`px-4 py-2 rounded-[14px] text-xs font-medium transition-all duration-300 whitespace-nowrap flex-shrink-0 ${
+                  chatFilter === 'personal'
+                    ? 'bg-blue-600/50 text-white shadow-lg shadow-blue-500/10'
+                    : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
+                }`}
+              >
+                Личные
+              </button>
+              <button
+                onClick={() => { setChatFilter('group'); setSelectedChannel(null); }}
+                className={`px-4 py-2 rounded-[14px] text-xs font-medium transition-all duration-300 whitespace-nowrap flex-shrink-0 ${
+                  chatFilter === 'group'
+                    ? 'bg-blue-600/50 text-white shadow-lg shadow-blue-500/10'
+                    : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
+                }`}
+              >
+                Группы
+              </button>
+              <button
+                onClick={() => { setChatFilter('channels'); setSelectedChat(null); }}
+                className={`px-4 py-2 rounded-[14px] text-xs font-medium transition-all duration-300 whitespace-nowrap flex-shrink-0 ${
+                  chatFilter === 'channels'
+                    ? 'bg-blue-600/50 text-white shadow-lg shadow-blue-500/10'
+                    : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
+                }`}
+              >
+                Каналы
+              </button>
+            </div>
             <button
               className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 hover:scale-105 transition-all duration-300 border border-blue-500/30 flex-shrink-0"
               onClick={chatFilter === 'channels' ? () => setShowCreateChannel(true) : openNewChat}
@@ -1941,6 +2037,12 @@ export default function ChatsPage() {
               setSelectedChannel(null);
               getChannels().then(setChannels);
             }
+          }}
+          onUnsubscribeChannel={async () => {
+            if (!selectedChannel) return;
+            await unsubscribeChannel(selectedChannel.id);
+            setSelectedChannel(null);
+            getChannels().then(setChannels);
           }}
           onOpenMediaViewer={openViewer}
         />

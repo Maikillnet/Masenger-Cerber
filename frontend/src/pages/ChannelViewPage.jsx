@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings, Smile } from 'lucide-react';
+import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings, Smile, LogOut } from 'lucide-react';
 import {
   getChannel,
   getChannelPosts,
@@ -9,6 +9,7 @@ import {
   getPostComments,
   addComment,
   joinChannel,
+  unsubscribeChannel,
 } from '../api';
 import ChannelSettingsModal from '../components/ChannelSettingsModal';
 import MediaPicker from '../components/MediaPicker';
@@ -401,13 +402,33 @@ export default function ChannelViewPage() {
             <Link to="/channels" className="inline-flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300">
               <ArrowLeft size={16} /> Каналы
             </Link>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
-              title="Настройки канала"
-            >
-              <Settings size={20} />
-            </button>
+            <div className="flex items-center gap-1">
+              {channel.isMember && (
+                <button
+                  onClick={async () => {
+                    if (!confirm('Отписаться от канала?')) return;
+                    try {
+                      await unsubscribeChannel(id);
+                      navigate('/channels');
+                    } catch (e) {
+                      console.error(e);
+                      alert(e.message || 'Ошибка отписки');
+                    }
+                  }}
+                  className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-red-400 transition-all"
+                  title="Отписаться от канала"
+                >
+                  <LogOut size={20} />
+                </button>
+              )}
+              <button
+                onClick={() => setShowSettings(true)}
+                className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
+                title="Настройки канала"
+              >
+                <Settings size={20} />
+              </button>
+            </div>
           </div>
           <h1 className="text-xl font-semibold text-gray-100">{channel.name}</h1>
           {channel.description && (
