@@ -166,15 +166,17 @@ export async function getMessages(chatId, cursor = null) {
   return data;
 }
 
-export async function sendMessage(chatId, text, mediaFile = null, replyToId = null, stickerUrl = null) {
+export async function sendMessage(chatId, text, mediaFiles = [], replyToId = null, stickerUrl = null) {
   const token = localStorage.getItem('token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
+  const files = Array.isArray(mediaFiles) ? mediaFiles : mediaFiles ? [mediaFiles] : [];
+
   let body;
-  if (mediaFile) {
+  if (files.length > 0) {
     const formData = new FormData();
     formData.append('text', text || '');
-    formData.append('media', mediaFile);
+    files.forEach((file) => formData.append('media', file));
     if (replyToId) formData.append('replyToId', replyToId);
     body = formData;
   } else {

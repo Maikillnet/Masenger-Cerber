@@ -24,7 +24,8 @@ const chatMediaStorage = multer.diskStorage({
     const ext = path.extname(file.originalname) || '.jpg';
     const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4'];
     const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
-    cb(null, `chat-${req.user.id}-${Date.now()}${safeExt}`);
+    const unique = Math.random().toString(36).slice(2, 9);
+    cb(null, `chat-${req.user.id}-${Date.now()}-${unique}${safeExt}`);
   },
 });
 
@@ -58,11 +59,23 @@ const uploadGroupAvatar = multer({
   },
 });
 
-function getMediaType(filename) {
-  const ext = (filename || '').toLowerCase().split('.').pop();
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
-  if (ext === 'mp4') return 'video';
-  return 'document';
+function getMediaType(filenameOrFileOrArray) {
+  const getType = (filename) => {
+    const ext = (filename || '').toLowerCase().split('.').pop();
+    if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+    if (ext === 'mp4') return 'video';
+    return 'document';
+  };
+  if (Array.isArray(filenameOrFileOrArray)) {
+    return filenameOrFileOrArray.map((f) =>
+      getType(typeof f === 'string' ? f : (f?.filename ?? f?.originalname ?? ''))
+    );
+  }
+  const filename =
+    typeof filenameOrFileOrArray === 'string'
+      ? filenameOrFileOrArray
+      : (filenameOrFileOrArray?.filename ?? filenameOrFileOrArray?.originalname ?? '');
+  return getType(filename);
 }
 
 router.use(authenticateToken);
@@ -370,7 +383,7 @@ router.post('/:id/messages', (req, res, next) => {
   // Для JSON (стикер) — пропускаем multer, body уже разобран express.json()
   const isJson = req.headers['content-type']?.includes('application/json');
   if (isJson) return next();
-  uploadChatMedia.single('media')(req, res, (err) => {
+  uploadChatMedia.array('media', 28)(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
     next();
   });
@@ -378,11 +391,27 @@ router.post('/:id/messages', (req, res, next) => {
   try {
     const text = (req.body.text || '').trim();
     const replyToId = req.body.replyToId || null;
-    const hasMedia = !!req.file;
+    const files = Array.isArray(req.files) ? req.files : [];
+    const hasMedia = files.length > 0;
     const stickerUrl = (req.body.stickerUrl || '').trim() || null;
 
     if (!text && !hasMedia && !stickerUrl) {
       return res.status(400).json({ error: 'Укажите текст, прикрепите файл или выберите стикер' });
+    }
+
+    if (hasMedia) {
+      const mediaTypes = getMediaType(files);
+      const videoCount = mediaTypes.filter((t) => t === 'video').length;
+      if (videoCount > 8) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (e) {
+            /* ignore */
+          }
+        });
+        return res.status(400).json({ error: 'Максимум 8 видео в одном сообщении' });
+      }
     }
 
     const chat = await prisma.chat.findFirst({
@@ -399,13 +428,15 @@ router.post('/:id/messages', (req, res, next) => {
       senderId: req.user.id,
       chatId: req.params.id,
       replyToId: replyToId || undefined,
+      mediaUrls: [],
+      mediaTypes: [],
     };
     if (hasMedia) {
-      messageData.mediaUrl = `/uploads/media/${req.file.filename}`;
-      messageData.mediaType = getMediaType(req.file.filename);
+      messageData.mediaUrls = files.map((f) => `/uploads/media/${f.filename}`);
+      messageData.mediaTypes = getMediaType(files);
     } else if (stickerUrl) {
-      messageData.mediaUrl = stickerUrl;
-      messageData.mediaType = 'sticker';
+      messageData.mediaUrls = [stickerUrl];
+      messageData.mediaTypes = ['sticker'];
     }
 
     let message;
@@ -426,12 +457,14 @@ router.post('/:id/messages', (req, res, next) => {
         data: { updatedAt: new Date() },
       });
     } catch (createErr) {
-      if (hasMedia && req.file?.path) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (unlinkErr) {
-          console.error('Failed to delete uploaded file:', unlinkErr);
-        }
+      if (hasMedia && files.length > 0) {
+        files.forEach((f) => {
+          try {
+            if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          } catch (unlinkErr) {
+            console.error('Failed to delete uploaded file:', unlinkErr);
+          }
+        });
       }
       throw createErr;
     }
@@ -598,7 +631,7 @@ router.post('/:id/messages/:messageId/reactions', async (req, res) => {
   }
 });
 
-// POST /api/chats/:id/messages/:messageId/react — добавление реакции (upsert)
+// POST /api/chats/:id/messages/:messageId/react — добавление/переключение реакции (upsert: если есть — удаляем)
 router.post('/:id/messages/:messageId/react', async (req, res) => {
   try {
     const { emoji } = req.body;
@@ -617,19 +650,13 @@ router.post('/:id/messages/:messageId/react', async (req, res) => {
     });
     if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
 
-    const reaction = await prisma.reaction.upsert({
+    const existing = await prisma.reaction.findUnique({
       where: {
         userId_messageId_emoji: {
           userId: req.user.id,
           messageId: req.params.messageId,
           emoji: emojiVal,
         },
-      },
-      update: {},
-      create: {
-        userId: req.user.id,
-        messageId: req.params.messageId,
-        emoji: emojiVal,
       },
       include: { user: { select: { id: true, username: true } } },
     });
@@ -639,6 +666,31 @@ router.post('/:id/messages/:messageId/react', async (req, res) => {
       include: { userChats: true },
     });
     const io = req.app.get('io');
+
+    if (existing) {
+      await prisma.reaction.delete({ where: { id: existing.id } });
+      if (io && chat) {
+        chat.userChats.forEach((uc) =>
+          io.to(uc.userId).emit('message_reaction_updated', {
+            messageId: req.params.messageId,
+            chatId: req.params.id,
+            reaction: existing,
+            type: 'removed',
+          })
+        );
+      }
+      return res.json({ removed: true });
+    }
+
+    const reaction = await prisma.reaction.create({
+      data: {
+        userId: req.user.id,
+        messageId: req.params.messageId,
+        emoji: emojiVal,
+      },
+      include: { user: { select: { id: true, username: true } } },
+    });
+
     if (io && chat) {
       chat.userChats.forEach((uc) =>
         io.to(uc.userId).emit('message_reaction_updated', {

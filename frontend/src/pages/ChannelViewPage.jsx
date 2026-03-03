@@ -21,65 +21,69 @@ function PostCard({ post, currentUserId, onReact, onCommentClick }) {
   const userReacted = post.userReacted;
 
   return (
-    <div className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg p-4">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-11 h-11 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden flex-shrink-0">
-          {post.author?.avatar ? (
-            <img src={post.author.avatar} alt="" className="w-full h-full object-cover" />
-          ) : (
-            post.author?.username?.[0]?.toUpperCase()
-          )}
-        </div>
-        <div>
-          <span className="font-semibold text-gray-100 block">{post.author?.username}</span>
-          <span className="text-sm text-gray-500">{new Date(post.createdAt).toLocaleString('ru')}</span>
-        </div>
-      </div>
-
-      {post.content && (
-        <div className="mb-4 whitespace-pre-wrap break-words text-gray-200">{post.content}</div>
-      )}
-
-      {post.mediaUrl && (
-        <div className="mb-4">
+    <div className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg overflow-hidden flex flex-col h-auto">
+      {post.mediaUrl && (post.mediaType === 'image' || post.mediaType === 'video') && (
+        <div className="relative w-full">
           {post.mediaType === 'image' && (
-            <img src={post.mediaUrl} alt="" className="max-h-80 rounded-xl object-contain" />
+            <img src={post.mediaUrl} alt="" className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
           )}
           {post.mediaType === 'video' && (
-            <video src={post.mediaUrl} controls className="max-h-80 rounded-xl" />
+            <video src={post.mediaUrl} controls className="w-full h-auto max-h-[450px] object-contain bg-black/20" />
           )}
-          {post.mediaType === 'document' && (
+        </div>
+      )}
+      <div className={`${post.mediaUrl && (post.mediaType === 'image' || post.mediaType === 'video') ? 'px-4 pb-4 pt-2' : 'p-4'}`}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-11 h-11 rounded-full bg-blue-500/30 flex items-center justify-center overflow-hidden flex-shrink-0">
+            {post.author?.avatar ? (
+              <img src={post.author.avatar} alt="" className="w-full h-full object-cover" />
+            ) : (
+              post.author?.username?.[0]?.toUpperCase()
+            )}
+          </div>
+          <div>
+            <span className="font-semibold text-gray-100 block">{post.author?.username}</span>
+            <span className="text-sm text-gray-500">{new Date(post.createdAt).toLocaleString('ru')}</span>
+          </div>
+        </div>
+
+        {post.content && (
+          <div className="mb-4 whitespace-pre-wrap break-words text-gray-200">{post.content}</div>
+        )}
+
+        {post.mediaUrl && post.mediaType === 'document' && (
+          <div className="mb-4">
             <a href={post.mediaUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">
               <Paperclip size={14} /> Открыть файл
             </a>
-          )}
-        </div>
-      )}
+          </div>
+        )}
 
-      <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-white/10">
-        <span className="text-sm text-gray-500">👁 {post.viewCount ?? 0}</span>
-        <div className="flex gap-1 flex-wrap">
-          {EMOJIS.map((emoji) => (
-            <button
-              key={emoji}
-              onClick={() => onReact(post.id, emoji)}
-              className={`px-2 py-1 rounded-lg text-sm transition-all ${
-                userReacted === emoji
-                  ? 'bg-blue-500/30 text-blue-300'
-                  : 'bg-transparent text-gray-500 hover:bg-white/5 hover:text-gray-300'
-              }`}
-              title={emoji}
-            >
-              {emoji}{counts[emoji] ? ` ${counts[emoji]}` : ''}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-white/10">
+          <span className="text-sm text-gray-500">👁 {post.viewCount ?? 0}</span>
+          <div className="flex gap-1 flex-wrap">
+            {EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                onClick={() => onReact(post.id, emoji)}
+                className={`px-2 py-1 rounded-lg text-sm transition-all ${
+                  userReacted === emoji
+                    ? 'bg-blue-500/30 text-blue-300'
+                    : 'bg-transparent text-gray-500 hover:bg-white/5 hover:text-gray-300'
+                }`}
+                title={emoji}
+              >
+                {emoji}{counts[emoji] ? ` ${counts[emoji]}` : ''}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => onCommentClick(post)}
+            className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <MessageCircle size={16} /> Комментарии ({post.commentCount ?? 0})
+          </button>
         </div>
-        <button
-          onClick={() => onCommentClick(post)}
-          className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors"
-        >
-          <MessageCircle size={16} /> Комментарии ({post.commentCount ?? 0})
-        </button>
       </div>
     </div>
   );

@@ -78,8 +78,8 @@ model Message {
   editedAt  DateTime?
   isDeleted Boolean  @default(false)
 
-  mediaUrl  String?  // путь к медиафайлу
-  mediaType String?  // 'image', 'video', 'document'
+  mediaUrls  String[] @default([]) // пути к медиафайлам (альбом)
+  mediaTypes String[] @default([]) // 'image', 'video', 'document', 'sticker'
 
   isRead    Boolean  @default(false) // прочитано собеседником (для личных чатов)
 
@@ -146,8 +146,8 @@ model Post {
   editedAt  DateTime?
   isDeleted Boolean  @default(false)
 
-  mediaUrl  String?  // путь к медиафайлу
-  mediaType String?  // 'image', 'video', 'document'
+  mediaUrls  String[] @default([]) // пути к медиафайлам (альбом)
+  mediaTypes String[] @default([]) // 'image', 'video', 'document'
 
   authorId  String
   author    User    @relation(fields: [authorId], references: [id], onDelete: Cascade)

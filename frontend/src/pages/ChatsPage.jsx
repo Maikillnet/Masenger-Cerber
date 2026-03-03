@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -34,6 +34,113 @@ function formatTime(date) {
   if (diff < 86400000) return d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
   if (diff < 604800000) return d.toLocaleDateString('ru', { weekday: 'short' });
   return d.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' });
+}
+
+function MediaGrid({ urls, types, className = '' }) {
+  const items = (urls || []).map((url, i) => ({ url, type: (types || [])[i] || 'image' }));
+  const mediaItems = items.filter((it) => it.type === 'image' || it.type === 'video');
+  if (mediaItems.length === 0) return null;
+
+  const renderCell = (item, idx, cellClass = '') => (
+    <div key={idx} className={`relative overflow-hidden bg-black/10 ${cellClass}`}>
+      {item.type === 'image' ? (
+        <img src={item.url} alt="" className="w-full h-full object-cover" />
+      ) : (
+        <>
+          <video src={item.url} controls className="w-full h-full object-cover" />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-12 h-12 rounded-full bg-black/50 flex items-center justify-center">
+              <Play className="w-6 h-6 text-white fill-white" />
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  if (mediaItems.length === 1) {
+    const item = mediaItems[0];
+    const isImage = item.type === 'image';
+    return (
+      <div className={`rounded-2xl overflow-hidden ${className}`}>
+        <div className="relative w-full bg-black/20 flex items-center justify-center overflow-hidden min-h-[200px]">
+          {isImage && (
+            <div
+              className="absolute inset-0 z-0 scale-125 blur-3xl opacity-60"
+              style={{
+                backgroundImage: `url(${item.url})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+              }}
+            />
+          )}
+          {isImage ? (
+            <img src={item.url} alt="" className="relative z-10 max-w-full h-auto max-h-[500px] object-contain shadow-xl" />
+          ) : (
+            <div className="relative z-10 max-h-[500px]">
+              <video src={item.url} controls className="max-w-full h-auto max-h-[500px] object-contain shadow-xl" />
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
+                  <Play className="w-8 h-8 text-white fill-white" />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const firstImageUrl = mediaItems.find((m) => m.type === 'image')?.url;
+  const gridContent = (() => {
+    if (mediaItems.length === 2) {
+      return (
+        <div className="grid grid-cols-2 gap-1 rounded-2xl overflow-hidden">
+          {mediaItems.map((item, i) => renderCell(item, i, 'aspect-square'))}
+        </div>
+      );
+    }
+    if (mediaItems.length === 3) {
+      return (
+        <div className="grid grid-cols-2 gap-1 rounded-2xl overflow-hidden">
+          <div className="col-span-2 aspect-[16/10]">{renderCell(mediaItems[0], 0, 'w-full h-full')}</div>
+          {mediaItems.slice(1).map((item, i) => renderCell(item, i + 1, 'aspect-square'))}
+        </div>
+      );
+    }
+    if (mediaItems.length === 4) {
+      return (
+        <div className="grid grid-cols-2 gap-1 rounded-2xl overflow-hidden">
+          {mediaItems.map((item, i) => renderCell(item, i, 'aspect-square'))}
+        </div>
+      );
+    }
+    return (
+      <div className="grid grid-cols-3 gap-1 rounded-2xl overflow-hidden">
+        {mediaItems.map((item, i) => renderCell(item, i, 'aspect-square'))}
+      </div>
+    );
+  })();
+
+  if (mediaItems.length >= 2) {
+    return (
+      <div className={`relative overflow-hidden ${className}`}>
+        {firstImageUrl && (
+          <div
+            className="absolute inset-0 z-0 scale-125 blur-3xl opacity-40"
+            style={{
+              backgroundImage: `url(${firstImageUrl})`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+            }}
+          />
+        )}
+        <div className="relative z-10">{gridContent}</div>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFilter }) {
@@ -124,9 +231,8 @@ function ChatList({ chats, selectedId, onSelect, userStatus, searchQuery, chatFi
 
 function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onCloseSettings }) {
   const [text, setText] = useState('');
-  const [mediaFile, setMediaFile] = useState(null);
+  const [mediaFiles, setMediaFiles] = useState([]); // [{ file, url, type }]
   const [showSettings, setShowSettings] = useState(false);
-  const [mediaPreview, setMediaPreview] = useState(null); // { url, type: 'image'|'video' }
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [reactionMsg, setReactionMsg] = useState(null); // { msg, x, y } для выбора реакции
   const messagesEndRef = useRef(null);
@@ -190,12 +296,19 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
     };
   }, []);
 
+  useEffect(() => {
+    const current = mediaFiles;
+    return () => {
+      current.forEach((m) => m?.url && URL.revokeObjectURL(m.url));
+    };
+  }, [mediaFiles]);
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!text.trim() && !mediaFile) return;
+    if (!text.trim() && mediaFiles.length === 0) return;
     if (socket && chat?.id) socket.emit('typing_end', { chatId: chat.id });
     if (typingEndTimerRef.current) clearTimeout(typingEndTimerRef.current);
-    onSend(text.trim(), mediaFile, replyTo?.id);
+    onSend(text.trim(), mediaFiles.map((m) => m.file), replyTo?.id);
     setText('');
     setReplyTo(null);
     clearMedia();
@@ -204,8 +317,8 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (text.trim() || mediaFile) {
-        onSend(text.trim(), mediaFile);
+      if (text.trim() || mediaFiles.length > 0) {
+        onSend(text.trim(), mediaFiles.map((m) => m.file));
         setText('');
         clearMedia();
       }
@@ -213,25 +326,55 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
   };
 
   const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4'];
-    if (!allowed.includes(file.type)) {
-      alert('Разрешены: jpg, png, webp, gif, mp4');
+    const maxSize = 20 * 1024 * 1024;
+    const valid = files.filter((file) => {
+      if (!allowed.includes(file.type)) return false;
+      if (file.size > maxSize) return false;
+      return true;
+    });
+    if (valid.length < files.length) {
+      alert('Разрешены: jpg, png, webp, gif, mp4. Максимум 20 МБ на файл.');
+    }
+    if (valid.length === 0) return;
+    const maxTotal = 28;
+    const maxVideos = 8;
+    if (files.length + mediaFiles.length > maxTotal) {
+      alert('Максимум 20 фото и 8 видео');
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      alert('Максимум 20 МБ');
-      return;
-    }
-    setMediaFile(file);
-    setMediaPreview({ url: URL.createObjectURL(file), type: file.type.startsWith('video') ? 'video' : 'image' });
+    setMediaFiles((prev) => {
+      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => ({
+        file,
+        url: URL.createObjectURL(file),
+        type: file.type.startsWith('video') ? 'video' : 'image',
+      }));
+      const combined = [...prev, ...newItems].slice(0, maxTotal);
+      const videoCount = combined.filter((m) => m.type === 'video').length;
+      if (videoCount > maxVideos) {
+        newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
+        alert('Максимум 8 видео в одном сообщении');
+        return prev;
+      }
+      return combined;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeMediaFile = (index) => {
+    setMediaFiles((prev) => {
+      const next = [...prev];
+      const removed = next.splice(index, 1)[0];
+      if (removed?.url) URL.revokeObjectURL(removed.url);
+      return next;
+    });
   };
 
   const clearMedia = () => {
-    if (mediaPreview?.url) URL.revokeObjectURL(mediaPreview.url);
-    setMediaFile(null);
-    setMediaPreview(null);
+    mediaFiles.forEach((m) => m.url && URL.revokeObjectURL(m.url));
+    setMediaFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -327,28 +470,41 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
             )}
             {messages.map((msg) => {
             const isOwn = msg.senderId === user?.id;
-            const isSticker = msg.mediaUrl && msg.mediaType === 'sticker' && !msg.isDeleted;
+            const mediaUrls = msg.mediaUrls || (msg.mediaUrl ? [msg.mediaUrl] : []);
+            const mediaTypes = msg.mediaTypes || (msg.mediaType ? [msg.mediaType] : []);
+            const isSticker = mediaUrls.length > 0 && mediaTypes[0] === 'sticker' && !msg.isDeleted;
+            const hasMedia = mediaUrls.length > 0 && !msg.isDeleted;
+            const hasText = !!(msg.content || msg.text) && !msg.isDeleted;
+            const showTextBlock = hasText || msg.replyTo || msg.isDeleted;
             return (
               <div
                 key={msg.id}
                 id={`msg-${msg.id}`}
                 ref={(el) => { messageRefs.current[msg.id] = el; }}
-                className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
+                className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}
                 onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               >
                 {isSticker ? (
                   <div className="flex flex-col items-center gap-1.5">
-                    <img src={msg.mediaUrl} alt="" className="w-48 h-48 object-contain" />
+                    <img src={mediaUrls[0]} alt="" className="w-48 h-48 object-contain" />
                     <div className={`flex items-center gap-1.5 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
                       <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
                       {isOwn && (msg.isRead ? <CheckCheck className="w-4 h-4" /> : <Check className="w-4 h-4" />)}
                     </div>
                     {(() => {
-                      const groups = (msg.reactions || []).reduce((acc, r) => {
-                        const e = r.emoji || '';
-                        if (!acc[e]) acc[e] = { emoji: e, count: 0, userReacted: false };
-                        acc[e].count++;
-                        if (r.userId === user?.id) acc[e].userReacted = true;
+                      const seen = new Set();
+                      const deduped = (msg.reactions || []).filter((r) => {
+                        const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                      });
+                      const groups = deduped.reduce((acc, r) => {
+                        const e = (r.emoji || '').trim() || r.emoji || '';
+                        const k = e || `_${r.id || r.userId}`;
+                        if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                        acc[k].count++;
+                        if (r.userId === user?.id) acc[k].userReacted = true;
                         return acc;
                       }, {});
                       const list = Object.values(groups);
@@ -380,43 +536,109 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                   </div>
                 ) : (
                 <div
-                  className={`max-w-[75%] rounded-2xl overflow-hidden shadow-lg p-4 ${
+                  className={`flex flex-col overflow-hidden rounded-2xl shadow-lg relative w-fit max-w-[85%] sm:max-w-[35%] h-auto ${isOwn ? 'ml-auto' : 'mr-auto'} ${
                     isOwn
                       ? 'bg-blue-600/80 backdrop-blur-sm rounded-tr-sm text-white'
                       : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm text-gray-100'
-                  }`}
+                  } ${hasMedia ? 'p-0' : 'p-3 md:p-4'}`}
                 >
-                  {msg.replyTo && (
-                    <div className={`mb-2 pl-2 border-l-2 ${isOwn ? 'border-blue-300/50' : 'border-white/30'}`}>
-                      <span className="text-xs font-medium opacity-80">{msg.replyTo.sender?.username}</span>
-                      <p className="text-sm truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
+                  {hasMedia && !isSticker && (
+                    <div className={`relative flex flex-col ${mediaUrls.length === 1 && !hasText && !msg.replyTo ? 'w-fit' : 'w-full'}`}>
+                      <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} />
+                      {!hasText && !msg.replyTo && (
+                        <div className="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] text-white flex items-center gap-1 select-none pointer-events-none">
+                          {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                          {msg.editedAt && <span>(изм.)</span>}
+                          {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-300" /> : <Check size={12} />)}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {msg.mediaUrl && msg.mediaType === 'image' && !msg.isDeleted && (
-                    <img src={msg.mediaUrl} alt="" className="rounded-lg max-h-64 object-cover mb-2" />
-                  )}
-                  {msg.mediaUrl && msg.mediaType === 'video' && !msg.isDeleted && (
-                    <video src={msg.mediaUrl} controls className="rounded-lg max-h-64 mb-2" />
-                  )}
-                  {msg.isDeleted ? (
-                    <div className="italic opacity-70">Сообщение удалено</div>
-                  ) : (
-                    (msg.content || msg.text) && (
-                      <p className="whitespace-pre-wrap break-words text-inherit">{msg.content ?? msg.text}</p>
-                    )
-                  )}
-                  {(() => {
-                    const groups = (msg.reactions || []).reduce((acc, r) => {
-                      const e = r.emoji || '';
-                      if (!acc[e]) acc[e] = { emoji: e, count: 0, userReacted: false };
-                      acc[e].count++;
-                      if (r.userId === user?.id) acc[e].userReacted = true;
+                  {showTextBlock ? (
+                    <div className={`${hasMedia ? 'px-3 py-2 bg-inherit relative w-full text-left' : ''} space-y-1 relative min-w-[80px]`}>
+                      {msg.replyTo && (
+                        <div className={`mb-1 border-l-2 pl-2 opacity-80 text-[15px] leading-snug ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
+                          <span className="font-medium">{msg.replyTo.sender?.username}</span>
+                          <p className="truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
+                        </div>
+                      )}
+                      {msg.isDeleted ? (
+                        <div className="italic opacity-70 text-[15px] leading-snug">Сообщение удалено</div>
+                      ) : (
+                        (msg.content || msg.text) && (
+                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words pr-12">
+                            {msg.content ?? msg.text}
+                          </div>
+                        )
+                      )}
+                      {(() => {
+                        const seen = new Set();
+                        const deduped = (msg.reactions || []).filter((r) => {
+                          const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                          if (seen.has(key)) return false;
+                          seen.add(key);
+                          return true;
+                        });
+                        const groups = deduped.reduce((acc, r) => {
+                          const e = (r.emoji || '').trim() || r.emoji || '';
+                          const k = e || `_${r.id || r.userId}`;
+                          if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                          acc[k].count++;
+                          if (r.userId === user?.id) acc[k].userReacted = true;
+                          return acc;
+                        }, {});
+                        const list = Object.values(groups);
+                        if (list.length === 0) return null;
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {list.map((g) => (
+                              <button
+                                key={g.emoji}
+                                type="button"
+                                onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
+                                className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                                  g.userReacted
+                                    ? 'bg-blue-500/30 border-blue-500/50 text-white'
+                                    : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'
+                                }`}
+                              >
+                                {g.emoji.startsWith('/uploads') ? (
+                                  <img src={g.emoji} alt="" className="w-6 h-6 object-contain" />
+                                ) : (
+                                  <span>{g.emoji}</span>
+                                )}
+                                {g.count > 1 && <span>{g.count}</span>}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      <div className={`absolute bottom-1 right-2 flex items-center gap-1 text-[10px] opacity-50 select-none ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
+                        {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                        {msg.editedAt && <span>(изм.)</span>}
+                        {isOwn && !msg.isDeleted && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                      </div>
+                    </div>
+                  ) : (() => {
+                    const seen = new Set();
+                    const deduped = (msg.reactions || []).filter((r) => {
+                      const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                      if (seen.has(key)) return false;
+                      seen.add(key);
+                      return true;
+                    });
+                    const groups = deduped.reduce((acc, r) => {
+                      const e = (r.emoji || '').trim() || r.emoji || '';
+                      const k = e || `_${r.id || r.userId}`;
+                      if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                      acc[k].count++;
+                      if (r.userId === user?.id) acc[k].userReacted = true;
                       return acc;
                     }, {});
                     const list = Object.values(groups);
                     if (list.length === 0) return null;
                     return (
-                      <div className="flex flex-wrap gap-1 mt-2">
+                      <div className="flex flex-wrap gap-1 px-2 pb-2 pt-1">
                         {list.map((g) => (
                           <button
                             key={g.emoji}
@@ -439,19 +661,6 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
                       </div>
                     );
                   })()}
-                  <div className={`flex justify-end items-center gap-1 mt-1 text-xs ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
-                    <span>
-                      {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
-                      {msg.editedAt && ' (изм.)'}
-                    </span>
-                    {isOwn && !msg.isDeleted && (
-                      msg.isRead ? (
-                        <CheckCheck className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                      ) : (
-                        <Check className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                      )
-                    )}
-                  </div>
                 </div>
                 )}
               </div>
@@ -509,7 +718,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
               className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
               onClick={() => { setReactionMsg({ msg: menuMsg.msg, x: menuMsg.x, y: menuMsg.y }); setMenuMsg(null); }}
             >
-              Реакция
+              Добавить реакцию
             </button>
             {menuMsg.msg?.senderId === user?.id && !menuMsg.msg?.isDeleted && (
               <>
@@ -599,21 +808,25 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
       )}
 
       <form className="flex-shrink-0 p-4 pb-6 md:pb-8" onSubmit={handleSubmit}>
-        {mediaPreview && (
-          <div className="relative inline-block mb-3 ml-2">
-            {mediaPreview.type === 'video' ? (
-              <video src={mediaPreview.url} controls className="max-h-20 rounded-xl shadow-lg" />
-            ) : (
-              <img src={mediaPreview.url} alt="" className="max-h-20 rounded-xl object-cover shadow-lg" />
-            )}
-            <button
-              type="button"
-              className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center text-sm hover:bg-black/70 transition-colors"
-              onClick={clearMedia}
-              aria-label="Убрать"
-            >
-              ×
-            </button>
+        {mediaFiles.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto pb-3 mb-2 no-scrollbar">
+            {mediaFiles.map((item, i) => (
+              <div key={i} className="relative flex-shrink-0">
+                {item.type === 'video' ? (
+                  <video src={item.url} className="h-16 w-16 rounded-lg object-cover" muted />
+                ) : (
+                  <img src={item.url} alt="" className="h-16 w-16 rounded-lg object-cover" />
+                )}
+                <button
+                  type="button"
+                  className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center text-xs hover:bg-black/70 transition-colors"
+                  onClick={() => removeMediaFile(i)}
+                  aria-label="Удалить"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         <div ref={inputContainerRef} className="relative flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
@@ -662,6 +875,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
             ref={fileInputRef}
             type="file"
             accept="image/jpeg,image/png,image/webp,image/gif,video/mp4"
+            multiple
             onChange={handleFileChange}
             className="hidden"
           />
@@ -678,7 +892,7 @@ function ChatWindow({ chat, messages, onSend, onEdit, onDelete, onAddReaction, o
           <button
             type="submit"
             className="shrink-0 p-3 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 transition-all duration-200 flex items-center justify-center scale-95 hover:scale-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-95"
-            disabled={!text.trim() && !mediaFile}
+            disabled={!text.trim() && mediaFiles.length === 0}
             title="Отправить"
           >
             <Send size={20} />
@@ -845,15 +1059,25 @@ export default function ChatsPage() {
           if (m.id !== messageId) return m;
           const reactions = m.reactions || [];
           if (type === 'added' && reaction) {
-            if (reactions.some((r) => r.id === reaction.id || (r.userId === reaction.userId && r.emoji === reaction.emoji)))
-              return m;
+            const emojiNorm = (reaction.emoji || '').trim();
+            const alreadyExists = reactions.some(
+              (r) =>
+                r.id === reaction.id ||
+                (r.userId === reaction.userId && ((r.emoji || '').trim() === emojiNorm || r.emoji === reaction.emoji))
+            );
+            if (alreadyExists) return m;
             return { ...m, reactions: [...reactions, reaction] };
           }
           if (type === 'removed' && reaction) {
+            const emojiNorm = (reaction.emoji || '').trim();
             return {
               ...m,
               reactions: reactions.filter(
-                (r) => !(r.userId === reaction.userId && (r.emoji === reaction.emoji || r.emoji === reaction.emoji?.trim()))
+                (r) =>
+                  !(
+                    r.userId === reaction.userId &&
+                    ((r.emoji || '').trim() === emojiNorm || r.emoji === reaction.emoji || r.emoji === reaction.emoji?.trim())
+                  )
               ),
             };
           }
@@ -961,10 +1185,11 @@ export default function ChatsPage() {
       .catch(console.error);
   };
 
-  const handleSendMessage = (text, mediaFile = null, replyToId = null, stickerUrl = null) => {
+  const handleSendMessage = (text, mediaFiles = null, replyToId = null, stickerUrl = null) => {
     if (!selectedChat) return;
-    if (!text?.trim() && !mediaFile && !stickerUrl) return;
-    sendMessage(selectedChat.id, text, mediaFile, replyToId, stickerUrl)
+    const hasMedia = Array.isArray(mediaFiles) ? mediaFiles.length > 0 : !!mediaFiles;
+    if (!text?.trim() && !hasMedia && !stickerUrl) return;
+    sendMessage(selectedChat.id, text, mediaFiles, replyToId, stickerUrl)
       .then((msg) => {
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
@@ -976,14 +1201,32 @@ export default function ChatsPage() {
 
   const handleAddReaction = (chatId, messageId, emoji) => {
     reactToMessage(chatId, messageId, emoji)
-      .then((reaction) => {
-        if (selectedChat?.id === chatId && reaction?.id) {
+      .then((data) => {
+        if (selectedChat?.id !== chatId) return;
+        if (data?.removed) {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === messageId
-                ? { ...m, reactions: [...(m.reactions || []), { ...reaction, userId: reaction.userId }] }
+                ? {
+                    ...m,
+                    reactions: (m.reactions || []).filter(
+                      (r) => !(r.userId === user?.id && (r.emoji === emoji || r.emoji === emoji?.trim()))
+                    ),
+                  }
                 : m
             )
+          );
+        } else if (data?.id) {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== messageId) return m;
+              const reactions = m.reactions || [];
+              const exists = reactions.some(
+                (r) => r.id === data.id || (r.userId === data.userId && (r.emoji === data.emoji || r.emoji === (data.emoji || '').trim()))
+              );
+              if (exists) return m;
+              return { ...m, reactions: [...reactions, { ...data, userId: data.userId }] };
+            })
           );
         }
       })

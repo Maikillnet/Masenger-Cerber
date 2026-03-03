@@ -315,8 +315,8 @@ router.post('/:id/posts', uploadMedia.single('media'), async (req, res) => {
     };
 
     if (hasMedia) {
-      postData.mediaUrl = `/uploads/media/${req.file.filename}`;
-      postData.mediaType = getMediaType(req.file.filename);
+      postData.mediaUrls = [`/uploads/media/${req.file.filename}`];
+      postData.mediaTypes = [getMediaType(req.file.filename)];
     }
 
     let post;
