@@ -5,7 +5,7 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = Router();
 router.use(authenticateToken);
 
-// GET /api/posts/:id — пост по ID (с просмотром)
+// GET /api/posts/:id — пост по ID (без автоинкремента просмотров — используйте POST /:id/view)
 router.get('/:id', async (req, res) => {
   try {
     const post = await prisma.post.findFirst({
@@ -14,16 +14,12 @@ router.get('/:id', async (req, res) => {
         author: { select: { id: true, username: true, avatar: true } },
         channel: { select: { id: true, name: true } },
         reactions: { include: { user: { select: { id: true } } } },
-        _count: { select: { comments: true } },
+        _count: { select: { comments: true, views: true } },
       },
     });
     if (!post) return res.status(404).json({ error: 'Пост не найден' });
 
-    await prisma.post.update({
-      where: { id: req.params.id },
-      data: { viewCount: { increment: 1 } },
-    });
-    post.viewCount = (post.viewCount || 0) + 1;
+    const viewCount = post._count?.views ?? post.viewCount ?? 0;
 
     const byEmoji = {};
     post.reactions.forEach((r) => {
@@ -33,6 +29,7 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       ...post,
+      viewCount,
       reactionCounts: byEmoji,
       commentCount: post._count.comments,
       userReacted: userReacted || null,
@@ -43,17 +40,32 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/posts/:id/view — увеличить просмотры (если нужно отдельно)
+// POST /api/posts/:id/view — идемпотентная фиксация уникального просмотра
 router.post('/:id/view', async (req, res) => {
   try {
-    await prisma.post.update({
-      where: { id: req.params.id },
-      data: { viewCount: { increment: 1 } },
+    const postId = req.params.id;
+    const userId = req.user.id;
+
+    const post = await prisma.post.findFirst({
+      where: { id: postId, isDeleted: false },
     });
-    res.json({ success: true });
+    if (!post) return res.status(404).json({ error: 'Пост не найден' });
+
+    const existingView = await prisma.postView.findUnique({
+      where: { postId_userId: { postId, userId } },
+    });
+
+    if (!existingView) {
+      await prisma.postView.create({
+        data: { postId, userId },
+      });
+    }
+
+    const viewsCount = await prisma.postView.count({ where: { postId } });
+    res.json({ views: viewsCount });
   } catch (err) {
     console.error('View post error:', err);
-    res.status(500).json({ error: 'Ошибка' });
+    res.status(500).json({ error: 'Ошибка фиксации просмотра' });
   }
 });
 

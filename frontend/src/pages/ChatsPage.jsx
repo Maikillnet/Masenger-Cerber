@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X, ChevronLeft, ChevronRight, MessageCircle, Eye, LogOut } from 'lucide-react';
+import { Plus, Send, Paperclip, User, Check, CheckCheck, Settings, Smile, Play, X, ChevronLeft, ChevronRight, MessageCircle, Eye, LogOut, Pin, Mic, Trash2, Pause, Square, FileText, Download, Forward } from 'lucide-react';
 import {
   getChats,
   getChat,
@@ -14,6 +14,8 @@ import {
   getUsers,
   pinMessage,
   unpinMessage,
+  pinPost,
+  unpinPost,
   reactToMessage,
   removeMessageReaction,
   getStoryFeed,
@@ -27,12 +29,16 @@ import {
   getPostComments,
   addComment,
   reactToPost,
+  markPostAsViewed,
+  markMessageAsViewed,
   unsubscribeChannel,
 } from '../api';
 
 
 import GroupSettingsModal from '../components/GroupSettingsModal';
+import ForwardModal from '../components/ForwardModal';
 import ChannelSettingsModal from '../components/ChannelSettingsModal';
+import { FileCard, getFriendlyFileName } from '../components/FileCard';
 import MediaPicker from '../components/MediaPicker';
 import StoryViewer from '../components/StoryViewer';
 import StoryPreviewModal from '../components/StoryPreviewModal';
@@ -62,10 +68,162 @@ function formatTime(date) {
   return d.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' });
 }
 
-function MediaGrid({ urls, types, className = '', onMediaClick }) {
+function formatAudioTime(sec) {
+  const s = Math.floor(sec || 0);
+  const m = Math.floor(s / 60);
+  return `${m}:${(s % 60).toString().padStart(2, '0')}`;
+}
+
+const DOCUMENT_EXTENSIONS = ['pdf', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', '7z', 'rar', 'csv'];
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4',
+  'audio/webm', 'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4',
+  'application/pdf', 'application/zip', 'application/x-zip-compressed',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain', 'application/rtf', 'application/x-7z-compressed', 'application/x-rar-compressed',
+  'text/csv',
+];
+
+function getFileType(file) {
+  const ext = (file?.name || '').toLowerCase().split('.').pop();
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+  if (ext === 'mp4') return 'video';
+  if (['webm', 'mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return 'audio';
+  if (DOCUMENT_EXTENSIONS.includes(ext)) return 'document';
+  if (file?.type?.startsWith('video')) return 'video';
+  if (file?.type?.startsWith('image')) return 'image';
+  if (file?.type?.startsWith('audio')) return 'audio';
+  return 'document';
+}
+
+function isFileAllowed(file) {
+  const ext = (file?.name || '').toLowerCase().split('.').pop();
+  const allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'webm', 'mp3', 'wav', 'ogg', 'm4a', ...DOCUMENT_EXTENSIONS];
+  if (allowedExts.includes(ext)) return true;
+  if (ALLOWED_MIME_TYPES.includes(file?.type)) return true;
+  return false;
+}
+
+function PostWithViewTracking({ post, user, children }) {
+  const postRef = useRef(null);
+  const [hasViewed, setHasViewed] = useState(false);
+
+  useEffect(() => {
+    if (!postRef.current || hasViewed || post.authorId === user?.id) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          markPostAsViewed(post.id).catch(console.error);
+          setHasViewed(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.5 }
+    );
+    observer.observe(postRef.current);
+    return () => observer.disconnect();
+  }, [post.id, post.authorId, user?.id, hasViewed]);
+
+  return <div ref={postRef}>{children}</div>;
+}
+
+function VoiceMessagePlayer({ src, isOwn, timestamp, isRead, editedAt, className = '', fullWidth }) {
+  const audioRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [waveform] = useState(() => {
+    const bars = [];
+    const count = fullWidth ? 80 : 40;
+    for (let i = 0; i < count; i++) {
+      bars.push(0.3 + Math.random() * 0.7);
+    }
+    return bars;
+  });
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onLoadedMetadata = () => setDuration(audio.duration);
+    const onEnded = () => { setIsPlaying(false); setCurrentTime(0); };
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    if (audio.duration) setDuration(audio.duration);
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+    };
+  }, [src]);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) audio.pause();
+    else audio.play();
+  };
+
+  const progress = duration > 0 ? currentTime / duration : 0;
+
+  return (
+    <div className={`flex items-center gap-3 py-2 px-3 rounded-2xl ${fullWidth ? 'w-full min-w-0' : 'min-w-[200px] max-w-[300px]'} ${isOwn ? 'bg-blue-600/90' : 'bg-white/10'} ${className}`}>
+      <audio ref={audioRef} src={src} preload="metadata" className="hidden" />
+      <button
+        type="button"
+        onClick={togglePlay}
+        className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${
+          isOwn ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-white/20 hover:bg-white/30 text-gray-100'
+        }`}
+      >
+        {isPlaying ? (
+          <Pause size={18} className="fill-current" />
+        ) : (
+          <Play size={18} className="fill-current ml-0.5" />
+        )}
+      </button>
+      <span className={`font-mono text-sm tabular-nums min-w-[2.5rem] ${isOwn ? 'text-white/90' : 'text-gray-200'}`}>
+        {formatAudioTime(isPlaying ? currentTime : (duration > 0 ? duration : currentTime))}
+      </span>
+      <div className="flex-1 flex items-end gap-[2px] h-6 min-w-0 overflow-hidden">
+        {waveform.map((h, i) => (
+          <div
+            key={i}
+            className={`flex-1 min-w-[2px] max-w-[6px] rounded-full transition-colors duration-150 ${
+              (i + 1) / waveform.length <= progress
+                ? isOwn ? 'bg-white/90' : 'bg-blue-400/90'
+                : isOwn ? 'bg-white/35' : 'bg-white/25'
+            }`}
+            style={{ height: `${Math.max(4, h * 24)}px` }}
+          />
+        ))}
+      </div>
+      <div className={`flex items-center gap-0.5 text-[10px] opacity-70 flex-shrink-0 ${isOwn ? 'text-blue-100' : 'text-gray-400'}`}>
+        <span>{timestamp}</span>
+        {editedAt && <span>(изм.)</span>}
+        {isOwn && (isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+      </div>
+    </div>
+  );
+}
+
+function MediaGrid({ urls, types, className = '', onMediaClick, isOwn }) {
   const items = (urls || []).map((url, i) => ({ url, type: (types || [])[i] || 'image' }));
   const mediaItems = items.filter((it) => it.type === 'image' || it.type === 'video');
-  if (mediaItems.length === 0) return null;
+  const documentItems = items.filter((it) => it.type === 'document');
+
+  const renderDocumentLink = (item, idx) => (
+    <FileCard key={idx} url={item.url} className="flex-shrink-0 w-full" isOwn={isOwn} />
+  );
 
   const renderCell = (item, idx, cellClass = '') => (
     <div
@@ -90,45 +248,6 @@ function MediaGrid({ urls, types, className = '', onMediaClick }) {
       )}
     </div>
   );
-
-  if (mediaItems.length === 1) {
-    const item = mediaItems[0];
-    const isImage = item.type === 'image';
-    return (
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => onMediaClick?.(0)}
-        onKeyDown={(e) => e.key === 'Enter' && onMediaClick?.(0)}
-        className={`rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity ${className}`}
-      >
-        <div className="relative w-full bg-black/20 flex items-center justify-center overflow-hidden min-h-[200px]">
-          {isImage && (
-            <div
-              className="absolute inset-0 z-0 scale-125 blur-3xl opacity-60"
-              style={{
-                backgroundImage: `url(${item.url})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-              }}
-            />
-          )}
-          {isImage ? (
-            <img src={item.url} alt="" className="relative z-10 max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
-          ) : (
-            <div className="relative z-10 max-h-[450px]" onClick={(e) => e.stopPropagation()}>
-              <video src={item.url} controls className="max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
-                  <Play className="w-8 h-8 text-white fill-white" />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   const firstImageUrl = mediaItems.find((m) => m.type === 'image')?.url;
   const gridContent = (() => {
@@ -161,6 +280,52 @@ function MediaGrid({ urls, types, className = '', onMediaClick }) {
     );
   })();
 
+  if (mediaItems.length === 1) {
+    const item = mediaItems[0];
+    const isImage = item.type === 'image';
+    return (
+      <div className={`space-y-2 ${className}`}>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onMediaClick?.(0)}
+          onKeyDown={(e) => e.key === 'Enter' && onMediaClick?.(0)}
+          className="rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity"
+        >
+          <div className="relative w-full bg-black/20 flex items-center justify-center min-h-[200px]">
+            {isImage && (
+              <div
+                className="absolute inset-0 z-0 scale-125 blur-3xl opacity-60"
+                style={{
+                  backgroundImage: `url(${item.url})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                }}
+              />
+            )}
+            {isImage ? (
+              <img src={item.url} alt="" className="relative z-10 max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
+            ) : (
+              <div className="relative z-10 max-h-[450px]" onClick={(e) => e.stopPropagation()}>
+                <video src={item.url} controls className="max-w-full h-auto max-h-[450px] object-contain shadow-xl" />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
+                    <Play className="w-8 h-8 text-white fill-white" />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        {documentItems.length > 0 && (
+          <div className="flex flex-col sm:flex-row flex-wrap gap-3 px-4">
+            {documentItems.map((item, i) => renderDocumentLink(item, i))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (mediaItems.length >= 2) {
     return (
       <div className={`relative overflow-hidden ${className}`}>
@@ -174,7 +339,22 @@ function MediaGrid({ urls, types, className = '', onMediaClick }) {
             }}
           />
         )}
-        <div className="relative z-10">{gridContent}</div>
+        <div className="relative z-10 space-y-2">
+          {gridContent}
+          {documentItems.length > 0 && (
+            <div className="flex flex-col sm:flex-row flex-wrap gap-3 pt-2 px-4">
+              {documentItems.map((item, i) => renderDocumentLink(item, i))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (documentItems.length > 0 && mediaItems.length === 0) {
+    return (
+      <div className={`flex flex-col gap-3 p-4 px-6 rounded-t-2xl ${className}`}>
+        {documentItems.map((item, i) => renderDocumentLink(item, i))}
       </div>
     );
   }
@@ -404,7 +584,7 @@ function PostCommentsInline({ post, socket, onClose }) {
   );
 }
 
-function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, onSendPost, onPostReact, onJoinChannel, onUnsubscribeChannel, loading, loadingMore, hasMore, onLoadMore, pinnedMessage, onPin, onUnpin, userStatus, typingUser, socket, onUpdateChat, onUpdateChannel, onCloseSettings, onCloseChannel, onOpenMediaViewer }) {
+function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEdit, onDelete, onAddReaction, onRemoveReaction, onSendPost, onPostReact, onJoinChannel, onUnsubscribeChannel, loading, loadingMore, hasMore, onLoadMore, pinnedMessages, pinnedPosts, onPin, onUnpin, onPinPost, onUnpinPost, userStatus, typingUser, socket, onUpdateChat, onUpdateChannel, onCloseSettings, onCloseChannel, onOpenMediaViewer, onMessageSent }) {
   const [text, setText] = useState('');
   const [mediaFiles, setMediaFiles] = useState([]); // [{ file, url, type }]
   const [showSettings, setShowSettings] = useState(false);
@@ -421,11 +601,32 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   const [replyTo, setReplyTo] = useState(null);
   const [editingMsg, setEditingMsg] = useState(null);
   const [expandedPostId, setExpandedPostId] = useState(null);
+  const [pinnedIndex, setPinnedIndex] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [pendingVoiceFile, setPendingVoiceFile] = useState(null);
+  const [pendingVoiceDuration, setPendingVoiceDuration] = useState(0);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingStreamRef = useRef(null);
+  const timerIntervalRef = useRef(null);
   const typingEndTimerRef = useRef(null);
   const loadMoreRef = useRef(null);
+  const channelRef = useRef(channel);
+  const textRef = useRef(text);
+  const mediaFilesRef = useRef([]);
+  const voiceIntentRef = useRef('send'); // 'stop' | 'send'
+  const recordingTimeRef = useRef(0);
   const { user } = useAuth();
 
+  useEffect(() => {
+    channelRef.current = channel;
+    textRef.current = text;
+    mediaFilesRef.current = mediaFiles;
+  }, [channel, text, mediaFiles]);
+
   const messagesContainerRef = useRef(null);
+  const postsEndRef = useRef(null);
   useEffect(() => {
     if (!onLoadMore || !hasMore || loading || loadingMore) return;
     const sentinel = loadMoreRef.current;
@@ -452,6 +653,16 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   useEffect(() => {
     setExpandedPostId(null);
   }, [channel?.id]);
+
+  useEffect(() => {
+    setPinnedIndex(0);
+  }, [chat?.id, channel?.id]);
+
+  useEffect(() => {
+    if (channel?.id && posts.length > 0) {
+      postsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [channel?.id, posts.length]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -485,8 +696,171 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
     };
   }, [mediaFiles]);
 
+  const formatRecordingTime = (seconds) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const startRecording = async () => {
+    if (!chat?.id && !channel?.id) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        const streamToStop = recordingStreamRef.current;
+        if (streamToStop) {
+          streamToStop.getTracks().forEach((track) => track.stop());
+          recordingStreamRef.current = null;
+        }
+        if (audioChunksRef.current.length === 0) return;
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        if (audioBlob.size < 1000) return;
+        const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+        const intent = voiceIntentRef.current;
+        if (intent === 'stop') {
+          setPendingVoiceFile(file);
+          setPendingVoiceDuration(recordingTimeRef.current);
+          return;
+        }
+        const ch = channelRef.current;
+        const textToSend = (ch?.id ? textRef.current : '').trim();
+        const extraFiles = (mediaFilesRef.current || []).map((m) => m.file).filter(Boolean);
+        const allFiles = [file, ...extraFiles];
+        try {
+          if (ch?.id) {
+            const p = onSendPost?.(textToSend, allFiles);
+            if (p && typeof p.then === 'function') p.then(() => { setText(''); clearMedia(); });
+          } else if (chat?.id) {
+            const msg = await sendMessage(chat.id, textToSend || '', allFiles, replyTo?.id);
+            onMessageSent?.(msg);
+            setReplyTo(null);
+            setText('');
+            clearMedia();
+            setTimeout(scrollToBottom, 100);
+          }
+        } catch (err) {
+          console.error('Ошибка отправки голосового сообщения:', err);
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      recordingTimeRef.current = 0;
+      timerIntervalRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+        recordingTimeRef.current += 1;
+      }, 1000);
+    } catch (err) {
+      console.error('Ошибка доступа к микрофону:', err);
+      alert('Не удалось получить доступ к микрофону.');
+    }
+  };
+
+  const stopRecordingOnly = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      voiceIntentRef.current = 'stop';
+      mediaRecorderRef.current.stop();
+      const streamToStop = recordingStreamRef.current;
+      if (streamToStop) {
+        streamToStop.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+      setIsRecording(false);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    }
+  };
+
+  const stopRecordingAndSend = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      voiceIntentRef.current = 'send';
+      mediaRecorderRef.current.stop();
+      const streamToStop = recordingStreamRef.current;
+      if (streamToStop) {
+        streamToStop.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+      setIsRecording(false);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    }
+  };
+
+  const sendPendingVoice = async () => {
+    if (!pendingVoiceFile) return;
+    const textToSend = text.trim();
+    const file = pendingVoiceFile;
+    const extraFiles = mediaFiles.map((m) => m.file).filter(Boolean);
+    const allFiles = [file, ...extraFiles];
+    setPendingVoiceFile(null);
+    setPendingVoiceDuration(0);
+    setText('');
+    clearMedia();
+    try {
+      if (channel?.id) {
+        const p = onSendPost?.(textToSend, allFiles);
+        if (p && typeof p.then === 'function') p.then(() => {});
+      } else if (chat?.id) {
+        const msg = await sendMessage(chat.id, textToSend || '', allFiles, replyTo?.id);
+        onMessageSent?.(msg);
+        setReplyTo(null);
+        setTimeout(scrollToBottom, 100);
+      }
+    } catch (err) {
+      console.error('Ошибка отправки голосового:', err);
+      setPendingVoiceFile(file);
+    }
+  };
+
+  const cancelPendingVoice = () => {
+    setPendingVoiceFile(null);
+    setPendingVoiceDuration(0);
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.onstop = null;
+      mediaRecorderRef.current.ondataavailable = null;
+      mediaRecorderRef.current.stop();
+      audioChunksRef.current = [];
+      const streamToStop = recordingStreamRef.current;
+      if (streamToStop) {
+        streamToStop.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+      setIsRecording(false);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      setRecordingTime(0);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (pendingVoiceFile) {
+      sendPendingVoice();
+      return;
+    }
     if (!text.trim() && mediaFiles.length === 0) return;
     if (channel) {
       onSendPost?.(text.trim(), mediaFiles.map((m) => m.file));
@@ -505,14 +879,19 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (pendingVoiceFile) {
+        sendPendingVoice();
+        return;
+      }
       if (text.trim() || mediaFiles.length > 0) {
         if (channel) {
           onSendPost?.(text.trim(), mediaFiles.map((m) => m.file));
           setText('');
           clearMedia();
         } else {
-          onSend(text.trim(), mediaFiles.map((m) => m.file));
+          onSend(text.trim(), mediaFiles.map((m) => m.file), replyTo?.id);
           setText('');
+          setReplyTo(null);
           clearMedia();
         }
       }
@@ -522,33 +901,34 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4'];
-    const maxSize = 20 * 1024 * 1024;
+    const maxSize = 50 * 1024 * 1024; // 50 МБ для документов
     const valid = files.filter((file) => {
-      if (!allowed.includes(file.type)) return false;
+      if (!isFileAllowed(file)) return false;
       if (file.size > maxSize) return false;
       return true;
     });
     if (valid.length < files.length) {
-      alert('Разрешены: jpg, png, webp, gif, mp4. Максимум 20 МБ на файл.');
+      alert('Разрешены: jpg, png, webp, gif, mp4, webm, mp3, wav, ogg, m4a, pdf, zip, doc, docx, xls, xlsx, ppt, pptx, txt, rtf, 7z, rar, csv. Максимум 50 МБ на файл.');
     }
     if (valid.length === 0) return;
     const maxPhotos = 20;
     const maxVideos = 8;
-    const maxTotal = maxPhotos + maxVideos;
+    const maxDocuments = 10;
+    const maxTotal = maxPhotos + maxVideos + maxDocuments;
     if (files.length + mediaFiles.length > maxTotal) {
-      alert('Максимум 20 фото и 8 видео');
+      alert('Максимум 20 фото, 8 видео и 10 документов');
       return;
     }
     setMediaFiles((prev) => {
-      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => ({
-        file,
-        url: URL.createObjectURL(file),
-        type: file.type.startsWith('video') ? 'video' : 'image',
-      }));
+      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => {
+        const type = getFileType(file);
+        const url = type === 'document' ? null : URL.createObjectURL(file);
+        return { file, url, type, fileName: file.name };
+      });
       const combined = [...prev, ...newItems].slice(0, maxTotal);
       const videoCount = combined.filter((m) => m.type === 'video').length;
       const photoCount = combined.filter((m) => m.type === 'image').length;
+      const docCount = combined.filter((m) => m.type === 'document').length;
       if (videoCount > maxVideos) {
         newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
         alert('Максимум 8 видео в одном сообщении');
@@ -557,6 +937,11 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
       if (photoCount > maxPhotos) {
         newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
         alert('Максимум 20 фото в одном сообщении');
+        return prev;
+      }
+      if (docCount > maxDocuments) {
+        newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
+        alert('Максимум 10 документов в одном сообщении');
         return prev;
       }
       return combined;
@@ -580,7 +965,10 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
   };
 
   const scrollToMessage = (msgId) => {
-    const el = messageRefs.current[msgId] || document.getElementById(`msg-${msgId}`);
+    const id = String(msgId || '');
+    const el = id.startsWith('post-')
+      ? document.getElementById(id)
+      : messageRefs.current[msgId] || document.getElementById(`msg-${msgId}`);
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
@@ -661,7 +1049,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
             {((chat?.isGroup) || (channel && channel.isMember)) && (
               <button
                 onClick={() => setShowSettings(true)}
-                className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
+                className="p-2 rounded-xl text-gray-400 hover:bg-white/10 transition-all"
                 title={channel ? 'Настройки канала' : 'Настройки группы'}
               >
                 <Settings size={20} />
@@ -671,18 +1059,77 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
         )}
       </header>
 
-      {pinnedMessage && !channel && (
-        <button
-          className="flex-shrink-0 flex items-center gap-2 px-4 py-2 mx-4 mt-2 border border-white/10 rounded-xl bg-white/10 backdrop-blur-sm hover:bg-white/15 transition-all text-left"
-          onClick={() => scrollToMessage(pinnedMessage.id)}
-        >
-          <span className="text-xs">📌</span>
-          <div className="flex-1 min-w-0">
-            <span className="text-xs text-blue-400 font-medium">{pinnedMessage.sender?.username}</span>
-            <span className="text-sm text-gray-300 truncate block">{pinnedMessage.content ?? pinnedMessage.text}</span>
+      {/* Закреплённые сообщения — стеклянная полоска + крестик открепить */}
+      {!channel && (() => {
+        const list = pinnedMessages || [];
+        if (list.length === 0) return null;
+        const idx = Math.min(pinnedIndex, list.length - 1);
+        const pm = list[idx];
+        return (
+          <div
+            className="sticky top-0 z-40 mx-3 mt-2 mb-1 px-4 py-2.5 flex items-center gap-2.5 cursor-pointer rounded-xl bg-white/[0.08] backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.06)] hover:bg-white/[0.12] transition-all"
+            onClick={() => {
+              scrollToMessage(pm.id);
+              setPinnedIndex((i) => (i + 1) % list.length);
+            }}
+          >
+            <Pin size={16} className="flex-shrink-0 text-slate-400" />
+            <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
+              <span className="text-sm font-medium text-slate-300 shrink-0">{pm.sender?.username}</span>
+              <span className="text-slate-500">·</span>
+              <span className="text-sm text-slate-400 truncate">{(pm.content ?? pm.text) || 'Медиа'}</span>
+            </div>
+            {list.length > 1 && (
+              <span className="text-xs text-slate-500 shrink-0">{idx + 1}/{list.length}</span>
+            )}
+            <ChevronRight size={16} className="flex-shrink-0 text-slate-500" />
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onUnpin?.(pm.id); }}
+              className="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-white/10 transition-colors"
+              title="Открепить"
+            >
+              <X size={18} />
+            </button>
           </div>
-        </button>
-      )}
+        );
+      })()}
+
+      {/* Закреплённые посты — стеклянная полоска + крестик открепить */}
+      {channel && (() => {
+        const list = pinnedPosts || [];
+        if (list.length === 0) return null;
+        const idx = Math.min(pinnedIndex, list.length - 1);
+        const post = list[idx];
+        return (
+          <div
+            className="sticky top-0 z-40 mx-3 mt-2 mb-1 px-4 py-2.5 flex items-center gap-2.5 cursor-pointer rounded-xl bg-white/[0.08] backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.06)] hover:bg-white/[0.12] transition-all"
+            onClick={() => {
+              scrollToMessage(`post-${post.id}`);
+              setPinnedIndex((i) => (i + 1) % list.length);
+            }}
+          >
+            <Pin size={16} className="flex-shrink-0 text-slate-400" />
+            <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
+              <span className="text-sm font-medium text-slate-300 shrink-0">{post.author?.username}</span>
+              <span className="text-slate-500">·</span>
+              <span className="text-sm text-slate-400 truncate">{post.content || 'Медиа'}</span>
+            </div>
+            {list.length > 1 && (
+              <span className="text-xs text-slate-500 shrink-0">{idx + 1}/{list.length}</span>
+            )}
+            <ChevronRight size={16} className="flex-shrink-0 text-slate-500" />
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onUnpinPost?.(post.id); }}
+              className="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-white/10 transition-colors"
+              title="Открепить"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        );
+      })()}
 
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 pb-8 md:pb-10 space-y-3 flex flex-col w-full">
         {isChannelMode && channel ? (
@@ -699,6 +1146,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 const mediaUrls = post.mediaUrls || (post.mediaUrl ? [post.mediaUrl] : []);
                 const mediaTypes = post.mediaTypes || (post.mediaType ? [post.mediaType] : []);
                 const isStickerPost = mediaUrls.length > 0 && mediaTypes.some((t) => t === 'sticker');
+                const audioItems = (mediaUrls || []).map((url, i) => ({ url, type: (mediaTypes || [])[i] })).filter((it) => it.type === 'audio');
                 const stickerUrls = isStickerPost ? mediaUrls.filter((_, i) => (mediaTypes[i] || '') === 'sticker') : [];
                 const stickerList = isStickerPost ? (stickerUrls.length ? stickerUrls : mediaUrls) : [];
                 const stickerCount = stickerList.length;
@@ -707,11 +1155,12 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 const userReacted = post.userReacted;
                 const isExpanded = expandedPostId === post.id;
                 return (
-                  <div key={post.id} className="w-full flex justify-center">
-                    <div
-                      className={`w-full max-w-[100%] rounded-2xl overflow-hidden ${hasOnlyStickers ? '' : 'bg-white/10 backdrop-blur-sm border border-white/5'} shadow-xl`}
-                      onContextMenu={(e) => handlePostContextMenu(e, post)}
-                    >
+                  <PostWithViewTracking key={post.id} post={post} user={user}>
+                    <div id={`post-${post.id}`} className="w-full flex justify-center scroll-mt-4">
+                      <div
+                        className={`w-full max-w-[100%] rounded-2xl overflow-hidden ${hasOnlyStickers ? '' : 'bg-white/10 backdrop-blur-sm border border-white/5'} shadow-xl`}
+                        onContextMenu={(e) => handlePostContextMenu(e, post)}
+                      >
                       {mediaUrls.length > 0 && (
                         <div className="relative w-full">
                           {isStickerPost ? (
@@ -725,15 +1174,33 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                               }`}
                             >
                               {stickerList.map((url, idx) => (
-                                <img key={idx} src={url} alt="" className="w-full h-auto aspect-square object-contain transition-transform hover:scale-105 cursor-pointer" onClick={() => onOpenMediaViewer?.(mediaUrls, mediaTypes, mediaUrls.indexOf(url))} />
+                                <img key={idx} src={url} alt="" className="w-full h-auto aspect-square object-contain transition-transform hover:scale-105 cursor-pointer" onClick={() => onOpenMediaViewer?.(mediaUrls, mediaTypes, mediaUrls.indexOf(url), post.author?.username)} />
                               ))}
                             </div>
                           ) : (
-                            <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
+                            <>
+                              <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx, post.author?.username)} isOwn={post.authorId === user?.id} />
+                              {audioItems.length > 0 && (
+                                <div className="px-4 py-3 flex flex-col gap-2 w-full">
+                                  {audioItems.map((item, i) => (
+                                    <VoiceMessagePlayer
+                                      key={i}
+                                      src={item.url}
+                                      isOwn={post.authorId === user?.id}
+                                      timestamp={new Date(post.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                                      fullWidth
+                                    />
+                                  ))}
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       )}
                       <div className="p-4">
+                        {post.forwardedFrom && (
+                          <div className="text-xs text-gray-500 mb-2">Переслано от: {post.forwardedFrom}</div>
+                        )}
                         {post.content && (
                           <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words text-gray-200 mb-4">{post.content}</div>
                         )}
@@ -785,7 +1252,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                           <div className="flex items-center gap-3 text-xs text-gray-500">
                             <span className="flex items-center gap-1">
                               <Eye size={14} />
-                              {formatViews(post.viewCount)}
+                              {formatViews(post.viewCount ?? post._count?.views ?? 0)}
                             </span>
                             <span>{new Date(post.createdAt).toLocaleString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
@@ -795,9 +1262,11 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                         )}
                       </div>
                     </div>
-                  </div>
+                    </div>
+                  </PostWithViewTracking>
                 );
               })}
+              <div ref={postsEndRef} />
             </div>
           )
         ) : loading ? (
@@ -814,6 +1283,15 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
               </div>
             )}
             {messages.map((msg) => {
+            if (msg.isSystem) {
+              return (
+                <div key={msg.id} className="flex justify-center py-2 w-full">
+                  <span className="text-sm text-gray-500 px-3 py-1 rounded-lg bg-white/5">
+                    {msg.text ?? msg.content}
+                  </span>
+                </div>
+              );
+            }
             const isOwn = msg.senderId === user?.id;
             const mediaUrls = msg.mediaUrls || (msg.mediaUrl ? [msg.mediaUrl] : []);
             const mediaTypes = msg.mediaTypes || (msg.mediaType ? [msg.mediaType] : []);
@@ -824,15 +1302,32 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
             const hasMedia = mediaUrls.length > 0 && !msg.isDeleted;
             const hasText = !!(msg.content || msg.text) && !msg.isDeleted;
             const showTextBlock = hasText || msg.replyTo || msg.isDeleted;
+            const showSenderHeader = chat?.isGroup && !isOwn && msg?.sender;
             return (
               <div
                 key={msg.id}
                 id={`msg-${msg.id}`}
                 ref={(el) => { messageRefs.current[msg.id] = el; }}
-                className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}
+                className={`flex w-full flex-shrink-0 ${isOwn ? 'justify-end' : 'justify-start'}`}
                 onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               >
-                {isSticker ? (
+                {showSenderHeader ? (
+                  <div className="flex gap-2.5 items-start max-w-[95%] min-w-0">
+                    <div className="w-9 h-9 rounded-full flex-shrink-0 overflow-hidden bg-white/10 border border-white/5 flex items-center justify-center">
+                      {msg.sender?.avatar ? (
+                        <img src={msg.sender.avatar} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-sm font-medium text-gray-400">{msg.sender?.username?.[0]?.toUpperCase() || '?'}</span>
+                      )}
+                    </div>
+                    <div className="flex flex-col min-w-[200px] max-w-full">
+                      <span className="text-[13px] font-medium text-blue-400 mb-0.5 max-w-full truncate block">{msg.sender?.username || 'Пользователь'}</span>
+                      {msg.forwardedFrom && (
+                        <div className="text-[11px] flex items-center gap-1 mb-1 font-medium text-gray-400">
+                          <Forward size={12} /> Переслано от: {msg.forwardedFrom}
+                        </div>
+                      )}
+                      {isSticker ? (
                   <div className={`relative flex flex-col w-fit max-w-[85%] sm:max-w-[35%] min-w-0 overflow-hidden ${isOwn ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
                     <div
                       className={`relative grid ${
@@ -859,7 +1354,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                       </div>
                     )}
                     {hasText && (
-                      <div className="mt-1.5 px-2 py-1 rounded-lg bg-white/10 border border-white/10 text-gray-100 text-[15px] leading-snug whitespace-pre-wrap break-words w-fit max-w-full">
+                      <div className="mt-1.5 px-2 py-1 rounded-lg bg-white/10 border border-white/10 text-gray-100 text-[15px] leading-snug whitespace-pre-wrap break-words min-w-0 w-fit max-w-full pb-1">
                         {msg.content ?? msg.text}
                       </div>
                     )}
@@ -908,16 +1403,40 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                   </div>
                 ) : (
                 <div
-                  className={`flex flex-col overflow-hidden rounded-2xl shadow-lg relative w-fit max-w-[85%] sm:max-w-[35%] h-auto ${isOwn ? 'ml-auto' : 'mr-auto'} ${
+                  className={`flex flex-col rounded-2xl shadow-lg relative w-fit ${hasMedia && !isSticker ? 'max-w-[min(420px,90%)]' : 'max-w-[360px]'} h-auto ${hasMedia && !isSticker ? 'overflow-visible' : 'overflow-hidden'} ${isOwn ? 'ml-auto' : 'mr-auto'} ${
                     isOwn
                       ? 'bg-blue-600/80 backdrop-blur-sm rounded-tr-sm text-white'
                       : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm text-gray-100'
                   } p-0`}
                 >
+                  {msg.forwardedFrom && (
+                    <div className={`text-[11px] flex items-center gap-1 mb-1 font-medium px-3 pt-2 ${msg.senderId === user?.id ? 'text-blue-200' : 'text-gray-400'}`}>
+                      <Forward size={12} /> Переслано от: {msg.forwardedFrom}
+                    </div>
+                  )}
                   {hasMedia && !isSticker && (
-                    <div className={`relative flex flex-col ${mediaUrls.length === 1 && !hasText && !msg.replyTo ? 'w-fit' : 'w-full'}`}>
-                      <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
-                      {!hasText && !msg.replyTo && (
+                    <div className={`relative flex flex-col gap-2 ${mediaUrls.length === 1 && !hasText && !msg.replyTo ? 'w-fit max-w-full' : 'w-full'}`}>
+                      {(mediaUrls || []).map((url, idx) => {
+                        const isAudio =
+                          (url && /\.(webm|mp3|wav|ogg|m4a)$/i.test(url)) ||
+                          mediaTypes?.[idx] === 'audio' ||
+                          mediaTypes?.[idx] === 'voice';
+                        if (isAudio) {
+                          return (
+                            <VoiceMessagePlayer
+                              key={idx}
+                              src={url}
+                              isOwn={isOwn}
+                              timestamp={new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                              isRead={msg.isRead}
+                              editedAt={msg.editedAt}
+                            />
+                          );
+                        }
+                        return null;
+                      })}
+                      <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx, msg.sender?.username)} isOwn={isOwn} />
+                      {!hasText && !msg.replyTo && !(mediaUrls || []).every((url, i) => (url && /\.(webm|mp3|wav|ogg|m4a)$/i.test(url)) || mediaTypes?.[i] === 'audio' || mediaTypes?.[i] === 'voice') && (
                         <div className="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full text-white opacity-100 flex items-center gap-1 select-none pointer-events-none text-[10px]">
                           <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
                           {msg.editedAt && <span>(изм.)</span>}
@@ -927,10 +1446,10 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                     </div>
                   )}
                   {showTextBlock ? (
-                    <div className={`px-3 pt-2 pb-5 min-w-[80px] ${hasMedia ? 'bg-inherit' : ''} space-y-1 relative`}>
+                    <div className={`px-3 pt-2 pb-8 min-w-[240px] max-w-full ${hasMedia ? 'bg-inherit' : ''} space-y-1 relative overflow-visible`}>
                       {msg.replyTo && (
-                        <div className={`mb-1 border-l-2 pl-2 opacity-80 text-[15px] leading-snug ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
-                          <span className="font-medium">{msg.replyTo.sender?.username}</span>
+                        <div className={`mb-1 border-l-2 pl-2 opacity-80 text-[15px] leading-snug min-w-0 ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
+                          <span className="font-medium truncate block max-w-full">{msg.replyTo.sender?.username}</span>
                           <p className="truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
                         </div>
                       )}
@@ -938,7 +1457,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                         <div className="italic opacity-70 text-[15px] leading-snug">Сообщение удалено</div>
                       ) : (
                         (msg.content || msg.text) && (
-                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words">
+                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words min-w-[240px] pb-1">
                             {msg.content ?? msg.text}
                           </div>
                         )
@@ -1035,6 +1554,173 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                   })()}
                 </div>
                 )}
+                    </div>
+                  </div>
+                ) : isSticker ? (
+                  <div className={`relative flex flex-col w-fit max-w-[85%] sm:max-w-[35%] min-w-0 overflow-hidden ${isOwn ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                    <div className={`relative grid ${stickerCount === 1 ? 'w-40 h-40 sm:w-48 sm:h-48' : stickerCount <= 4 ? 'grid-cols-2 gap-2' : 'grid-cols-3 gap-1'}`}>
+                      {stickerList.map((url, idx) => (
+                        <img key={idx} src={url} alt="" className="w-full h-auto aspect-square object-contain transition-transform hover:scale-105" />
+                      ))}
+                      <div className="absolute bottom-1 right-1 bg-black/30 backdrop-blur-md px-1.5 py-0.5 rounded-full text-[10px] text-white flex items-center gap-1 select-none pointer-events-none">
+                        <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                        {msg.editedAt && <span>(изм.)</span>}
+                        {isOwn && !msg.isDeleted && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                      </div>
+                    </div>
+                    {msg.replyTo && (
+                      <div className={`mt-1.5 border-l-2 pl-2 opacity-80 text-[15px] leading-snug w-fit ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
+                        <span className="font-medium">{msg.replyTo.sender?.username}</span>
+                        <p className="truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
+                      </div>
+                    )}
+                    {hasText && (
+                      <div className="mt-1.5 px-2 py-1 rounded-lg bg-white/10 border border-white/10 text-gray-100 text-[15px] leading-snug whitespace-pre-wrap break-words min-w-0 w-fit max-w-full pb-1">
+                        {msg.content ?? msg.text}
+                      </div>
+                    )}
+                    {(() => {
+                      const seen = new Set();
+                      const deduped = (msg.reactions || []).filter((r) => {
+                        const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                      });
+                      const groups = deduped.reduce((acc, r) => {
+                        const e = (r.emoji || '').trim() || r.emoji || '';
+                        const k = e || `_${r.id || r.userId}`;
+                        if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                        acc[k].count++;
+                        if (r.userId === user?.id) acc[k].userReacted = true;
+                        return acc;
+                      }, {});
+                      const list = Object.values(groups);
+                      if (list.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 mt-1 w-fit max-w-full min-w-0">
+                          {list.map((g) => (
+                            <button key={g.emoji} type="button" onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)} className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${g.userReacted ? 'bg-blue-500/30 border-blue-500/50 text-white' : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'}`}>
+                              {g.emoji.startsWith('/uploads') ? <img src={g.emoji} alt="" className="w-6 h-6 object-contain" /> : <span>{g.emoji}</span>}
+                              {g.count > 1 && <span>{g.count}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : (
+                  <div className={`flex flex-col rounded-2xl shadow-lg relative w-fit ${hasMedia && !isSticker ? 'max-w-[min(420px,90%)]' : 'max-w-[360px]'} h-auto ${hasMedia && !isSticker ? 'overflow-visible' : 'overflow-hidden'} ${isOwn ? 'ml-auto' : 'mr-auto'} ${isOwn ? 'bg-blue-600/80 backdrop-blur-sm rounded-tr-sm text-white' : 'bg-white/10 backdrop-blur-sm border border-white/5 rounded-tl-sm text-gray-100'} p-0`}>
+                    {hasMedia && !isSticker && (
+                      <div className={`relative flex flex-col gap-2 ${mediaUrls.length === 1 && !hasText && !msg.replyTo ? 'w-fit max-w-full' : 'w-full'}`}>
+                        {(mediaUrls || []).map((url, idx) => {
+                          const isAudio =
+                            (url && /\.(webm|mp3|wav|ogg|m4a)$/i.test(url)) ||
+                            mediaTypes?.[idx] === 'audio' ||
+                            mediaTypes?.[idx] === 'voice';
+                          if (isAudio) {
+                            return (
+                              <VoiceMessagePlayer
+                                key={idx}
+                                src={url}
+                                isOwn={isOwn}
+                                timestamp={new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
+                                isRead={msg.isRead}
+                                editedAt={msg.editedAt}
+                              />
+                            );
+                          }
+                          return null;
+                        })}
+                        <MediaGrid urls={mediaUrls} types={mediaTypes} className={mediaUrls.length === 1 && !hasText && !msg.replyTo ? '' : 'w-full'} onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx, msg.sender?.username)} isOwn={isOwn} />
+                        {!hasText && !msg.replyTo && !(mediaUrls || []).every((url, i) => (url && /\.(webm|mp3|wav|ogg|m4a)$/i.test(url)) || mediaTypes?.[i] === 'audio' || mediaTypes?.[i] === 'voice') && (
+                          <div className="absolute bottom-2 right-2 bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-full text-white opacity-100 flex items-center gap-1 select-none pointer-events-none text-[10px]">
+                            <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                            {msg.editedAt && <span>(изм.)</span>}
+                            {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {showTextBlock ? (
+                      <div className={`px-3 pt-2 pb-8 min-w-[240px] max-w-full ${hasMedia ? 'bg-inherit' : ''} space-y-1 relative overflow-visible`}>
+                        {msg.replyTo && (
+                          <div className={`mb-1 border-l-2 pl-2 opacity-80 text-[15px] leading-snug ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
+                            <span className="font-medium">{msg.replyTo.sender?.username}</span>
+                            <p className="truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
+                          </div>
+                        )}
+                        {msg.isDeleted ? (
+                          <div className="italic opacity-70 text-[15px] leading-snug">Сообщение удалено</div>
+                        ) : (msg.content || msg.text) && (
+                          <div className="text-[15px] leading-snug text-gray-100 whitespace-pre-wrap break-words min-w-[240px] pb-1">{msg.content ?? msg.text}</div>
+                        )}
+                        {(() => {
+                          const seen = new Set();
+                          const deduped = (msg.reactions || []).filter((r) => {
+                            const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                            if (seen.has(key)) return false;
+                            seen.add(key);
+                            return true;
+                          });
+                          const groups = deduped.reduce((acc, r) => {
+                            const e = (r.emoji || '').trim() || r.emoji || '';
+                            const k = e || `_${r.id || r.userId}`;
+                            if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                            acc[k].count++;
+                            if (r.userId === user?.id) acc[k].userReacted = true;
+                            return acc;
+                          }, {});
+                          const list = Object.values(groups);
+                          if (list.length === 0) return null;
+                          return (
+                            <div className="flex flex-wrap gap-1 w-fit max-w-full min-w-0">
+                              {list.map((g) => (
+                                <button key={g.emoji} type="button" onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)} className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${g.userReacted ? 'bg-blue-500/30 border-blue-500/50 text-white' : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'}`}>
+                                  {g.emoji.startsWith('/uploads') ? <img src={g.emoji} alt="" className="w-6 h-6 object-contain" /> : <span>{g.emoji}</span>}
+                                  {g.count > 1 && <span>{g.count}</span>}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                        <div className={`absolute bottom-1 right-2 flex items-center gap-1 select-none pointer-events-none opacity-60 text-[10px] ${isOwn ? 'text-blue-200' : 'text-gray-500'}`}>
+                          <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                          {msg.editedAt && <span>(изм.)</span>}
+                          {isOwn && !msg.isDeleted && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                        </div>
+                      </div>
+                    ) : (() => {
+                      const seen = new Set();
+                      const deduped = (msg.reactions || []).filter((r) => {
+                        const key = `${r.userId}|${(r.emoji || '').trim()}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                      });
+                      const groups = deduped.reduce((acc, r) => {
+                        const e = (r.emoji || '').trim() || r.emoji || '';
+                        const k = e || `_${r.id || r.userId}`;
+                        if (!acc[k]) acc[k] = { emoji: r.emoji || e, count: 0, userReacted: false };
+                        acc[k].count++;
+                        if (r.userId === user?.id) acc[k].userReacted = true;
+                        return acc;
+                      }, {});
+                      const list = Object.values(groups);
+                      if (list.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 px-2 pb-2 pt-1 w-fit max-w-full min-w-0">
+                          {list.map((g) => (
+                            <button key={g.emoji} type="button" onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)} className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${g.userReacted ? 'bg-blue-500/30 border-blue-500/50 text-white' : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'}`}>
+                              {g.emoji.startsWith('/uploads') ? <img src={g.emoji} alt="" className="w-6 h-6 object-contain" /> : <span>{g.emoji}</span>}
+                              {g.count > 1 && <span>{g.count}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1103,6 +1789,23 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
             onClick={(e) => e.stopPropagation()}
             style={{ left: menuPost.x, top: menuPost.y }}
           >
+            {channel?.isAdmin && (
+              (pinnedPosts || []).some((pp) => pp?.id === menuPost.post?.id) ? (
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+                  onClick={() => { onUnpinPost(menuPost.post?.id); setMenuPost(null); }}
+                >
+                  <Pin size={16} /> Открепить
+                </button>
+              ) : (
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+                  onClick={() => { onPinPost(menuPost.post?.id); setMenuPost(null); }}
+                >
+                  <Pin size={16} /> Закрепить
+                </button>
+              )
+            )}
             <button
               className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
               onClick={() => {
@@ -1147,27 +1850,43 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                   Редактировать
                 </button>
                 <button
+                  type="button"
                   className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-white/10 rounded-lg transition-colors"
-                  onClick={() => { onDelete(menuMsg.msg?.id); setMenuMsg(null); }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onDelete(menuMsg.msg?.id);
+                    setTimeout(() => setMenuMsg(null), 0);
+                  }}
                 >
                   Удалить
                 </button>
               </>
             )}
-            {pinnedMessage?.id === menuMsg.msg?.id ? (
-              <button
-                className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
-                onClick={() => { onUnpin(); setMenuMsg(null); }}
-              >
-                Открепить
-              </button>
-            ) : (
-              <button
-                className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
-                onClick={() => { onPin(menuMsg.msg?.id); setMenuMsg(null); }}
-              >
-                Закрепить
-              </button>
+            {(!chat?.isGroup || chat?.isAdmin) && (
+              (pinnedMessages || []).some((pm) => pm?.id === menuMsg.msg?.id) ? (
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+                  onClick={() => { onUnpin(menuMsg.msg?.id); setMenuMsg(null); }}
+                >
+                  Открепить
+                </button>
+              ) : (
+                <>
+                  <button
+                    className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+                    onClick={() => { onPin(menuMsg.msg?.id, 'personal'); setMenuMsg(null); }}
+                  >
+                    Закрепить у себя
+                  </button>
+                  <button
+                    className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors"
+                    onClick={() => { onPin(menuMsg.msg?.id, 'all'); setMenuMsg(null); }}
+                  >
+                    Закрепить у всех
+                  </button>
+                </>
+              )
             )}
           </div>
         </div>
@@ -1247,7 +1966,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
             Подписаться
           </button>
         </div>
-      ) : channel && channel.isMember && channel.creatorId !== user?.id && !channel.isAdmin ? (
+      ) : channel && channel.isMember && !(channel.creatorId === user?.id || channel.isAdmin || channel.canPost) ? (
         <div className="flex-shrink-0 p-4 pb-6 md:pb-8">
           <div className="flex items-center justify-center py-3 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 text-gray-500 text-sm">
             Вы не можете отправлять сообщения в этот канал
@@ -1256,10 +1975,17 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
       ) : (
       <form className="flex-shrink-0 p-4 pb-6 md:pb-8" onSubmit={handleSubmit}>
         {mediaFiles.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-3 mb-2 no-scrollbar">
+          <div className="flex gap-3 overflow-x-auto pb-3 mb-2 no-scrollbar">
             {mediaFiles.map((item, i) => (
               <div key={i} className="relative flex-shrink-0">
-                {item.type === 'video' ? (
+                {item.type === 'document' ? (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-br from-blue-500/20 to-indigo-600/20 border border-blue-500/30 min-w-[140px]">
+                    <div className="w-10 h-10 rounded-lg bg-black/20 flex items-center justify-center flex-shrink-0">
+                      <FileText size={20} className="text-blue-400" />
+                    </div>
+                    <span className="text-xs text-gray-200 truncate max-w-[90px]" title={item.fileName}>{getFriendlyFileName(item.fileName || 'Файл')}</span>
+                  </div>
+                ) : item.type === 'video' ? (
                   <video src={item.url} className="h-16 w-16 rounded-lg object-cover" muted />
                 ) : (
                   <img src={item.url} alt="" className="h-16 w-16 rounded-lg object-cover" />
@@ -1321,28 +2047,69 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4"
+            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,audio/webm,audio/mp3,audio/mpeg,application/pdf,application/zip,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,application/rtf,text/csv,.pdf,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf,.csv,.7z,.rar"
             multiple
             onChange={handleFileChange}
             className="hidden"
           />
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={handleTextChange}
-            onKeyDown={handleKeyDown}
-            placeholder={channel ? 'Написать пост...' : 'Сообщение...'}
-            maxLength={2000}
-            rows={1}
-            className="flex-1 bg-transparent border-none focus:outline-none text-gray-100 placeholder-gray-500 max-h-32 overflow-y-auto resize-none py-2 px-3"
-          />
+          <div className="flex-1 flex flex-col gap-2 min-w-0">
+            {pendingVoiceFile && (
+              <div className="flex items-center gap-2 bg-blue-500/20 border border-blue-500/30 rounded-2xl px-4 py-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                <Mic size={20} className="text-blue-400 shrink-0" />
+                <span className="text-blue-300 font-mono text-sm">{formatRecordingTime(pendingVoiceDuration)}</span>
+                <span className="flex-1 text-sm text-gray-300">Голосовое записано</span>
+                <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); cancelPendingVoice(); }} className="text-gray-400 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-500/10 transition-colors" title="Удалить"> <X size={18} /> </button>
+              </div>
+            )}
+            {isRecording && (
+              <div className="flex items-center justify-between bg-black/40 border border-red-500/30 rounded-2xl px-4 py-2 h-[52px] shadow-inner shrink-0" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-3">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                  <span className="text-red-400 font-mono text-lg">{formatRecordingTime(recordingTime)}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); stopRecordingOnly(); }} className="text-gray-400 hover:text-emerald-400 p-2 rounded-lg hover:bg-emerald-500/10 transition-colors" title="Остановить запись">
+                    <Square size={18} className="fill-current" />
+                  </button>
+                  <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); cancelRecording(); }} className="text-gray-400 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition-colors" title="Отменить">
+                    <Trash2 size={20} />
+                  </button>
+                </div>
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={handleTextChange}
+              onKeyDown={handleKeyDown}
+              placeholder={isRecording ? (channel ? 'Добавить текст к голосовому...' : 'Добавить текст...') : (channel ? 'Написать пост...' : 'Сообщение...')}
+              maxLength={2000}
+              rows={1}
+              className="flex-1 w-full min-w-0 bg-transparent border-none focus:outline-none text-gray-100 placeholder-gray-500 max-h-32 overflow-y-auto resize-none py-2 px-3"
+            />
+          </div>
           <button
-            type="submit"
-            className="shrink-0 p-3 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/30 transition-all duration-200 flex items-center justify-center scale-95 hover:scale-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-95"
-            disabled={!text.trim() && mediaFiles.length === 0}
-            title="Отправить"
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (pendingVoiceFile) sendPendingVoice();
+              else if (isRecording) stopRecordingAndSend();
+              else if (text.trim().length > 0 || mediaFiles.length > 0) handleSubmit(e);
+              else startRecording();
+            }}
+            className={`shrink-0 p-3 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg ${
+              isRecording || pendingVoiceFile || text.trim().length > 0 || mediaFiles.length > 0
+                ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/30 scale-95 hover:scale-100'
+                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/30 scale-95 hover:scale-100'
+            }`}
+            title={pendingVoiceFile ? 'Отправить' : isRecording ? 'Отправить сразу' : text.trim().length > 0 || mediaFiles.length > 0 ? 'Отправить' : 'Записать голосовое'}
           >
-            <Send size={20} />
+            {pendingVoiceFile || isRecording || text.trim().length > 0 || mediaFiles.length > 0 ? (
+              <Send size={22} className="shrink-0" />
+            ) : (
+              <Mic size={24} />
+            )}
           </button>
         </div>
       </form>
@@ -1381,9 +2148,10 @@ export default function ChatsPage() {
   const [selectedStoryFile, setSelectedStoryFile] = useState(null);
   const [, setForceRender] = useState(0);
   const [viewerData, setViewerData] = useState({ isOpen: false, images: [], types: [], index: 0 });
+  const [forwardData, setForwardData] = useState(null);
 
-  const openViewer = (images, types, index = 0) => {
-    setViewerData({ isOpen: true, images: images || [], types: types || [], index });
+  const openViewer = (images, types, index = 0, forwardedFrom = null) => {
+    setViewerData({ isOpen: true, images: images || [], types: types || [], index, forwardedFrom });
   };
 
   const closeViewer = () => {
@@ -1398,6 +2166,43 @@ export default function ChatsPage() {
   const prevMedia = (e) => {
     e?.stopPropagation();
     setViewerData((prev) => ({ ...prev, index: (prev.index - 1 + prev.images.length) % prev.images.length }));
+  };
+
+  const handleViewerDownload = async (e) => {
+    e?.stopPropagation();
+    const imageUrl = viewerData.images[viewerData.index];
+    if (!imageUrl) return;
+    const mediaType = viewerData.types[viewerData.index] || 'image';
+    const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+    const fileName = `photo_${Date.now()}.${ext}`;
+    const fullUrl = imageUrl.startsWith('http') || imageUrl.startsWith('blob:') || imageUrl.startsWith('data:')
+      ? imageUrl
+      : (window.location.origin + (imageUrl.startsWith('/') ? '' : '/') + imageUrl);
+    try {
+      const response = await fetch(fullUrl);
+      if (!response.ok) throw new Error('Fetch failed');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Ошибка при скачивании файла:', error);
+      alert('Не удалось скачать файл. Попробуйте еще раз.');
+    }
+  };
+
+  const handleViewerForward = (e) => {
+    e?.stopPropagation();
+    const url = viewerData.images[viewerData.index];
+    if (!url) return;
+    const sourceName = selectedChannel ? selectedChannel.name : (selectedChat?.isGroup ? selectedChat.name : selectedChat?.otherUser?.username);
+    closeViewer();
+    setForwardData({ mediaUrl: url, mediaUrls: viewerData.images, forwardedFrom: sourceName || null });
   };
 
   useEffect(() => {
@@ -1416,6 +2221,10 @@ export default function ChatsPage() {
     window.addEventListener('story_viewed', handleView);
     return () => window.removeEventListener('story_viewed', handleView);
   }, []);
+
+  useEffect(() => {
+    if (forwardData && channels.length === 0) getChannels().then(setChannels).catch(console.error);
+  }, [forwardData]);
 
   const handleConfirmStoryUpload = async (file, textOverlay, mediaSettings) => {
     await uploadStory(file, textOverlay, mediaSettings);
@@ -1504,15 +2313,12 @@ export default function ChatsPage() {
     socket.on('user_status', ({ userId, status }) => {
       setUserStatus((s) => ({ ...s, [userId]: status }));
     });
-    socket.on('message_pinned', ({ chatId, message, pinned }) => {
+    socket.on('message_pinned', ({ chatId, pinnedMessages }) => {
+      const list = pinnedMessages || [];
       setChats((prev) =>
-        prev.map((c) =>
-          c.id === chatId ? { ...c, pinnedMessage: pinned ? message : null } : c
-        )
+        prev.map((c) => (c.id === chatId ? { ...c, pinnedMessages: list } : c))
       );
-      setSelectedChat((c) =>
-        c?.id === chatId ? { ...c, pinnedMessage: pinned ? message : null } : c
-      );
+      setSelectedChat((c) => (c?.id === chatId ? { ...c, pinnedMessages: list } : c));
     });
     socket.on('messages_read', ({ chatId, readBy, readAt }) => {
       setMessages((prev) =>
@@ -1608,7 +2414,7 @@ export default function ChatsPage() {
       if (post.channelId !== selectedChannel.id) return;
       setPosts((prev) => {
         if (prev.some((p) => p.id === post.id)) return prev;
-        return [post, ...prev];
+        return [...prev, post];
       });
     };
     const onPostReaction = ({ postId, reactionCounts }) => {
@@ -1673,7 +2479,8 @@ export default function ChatsPage() {
       .catch((e) => { console.error(e); loadingChannelIdRef.current = null; });
     getChannelPosts(ch.id)
       .then((data) => {
-        const newPosts = Array.isArray(data) ? data : (data?.posts || data?.items || []);
+        const raw = Array.isArray(data) ? data : (data?.posts || data?.items || []);
+        const newPosts = [...raw].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
         setPosts((prev) => (loadingChannelIdRef.current === ch.id ? newPosts : prev));
       })
       .catch((e) => { console.error(e); })
@@ -1696,16 +2503,17 @@ export default function ChatsPage() {
       .finally(() => setLoadingMore(false));
   };
 
-  const handlePin = (messageId) => {
+  const handlePin = (messageId, visibility = 'all') => {
     if (!selectedChat) return;
-    pinMessage(selectedChat.id, messageId)
-      .then(({ pinnedMessage: pm }) => {
-        setSelectedChat((c) => (c ? { ...c, pinnedMessage: pm } : c));
+    pinMessage(selectedChat.id, messageId, visibility)
+      .then(({ pinnedMessages }) => {
+        const list = pinnedMessages || [];
+        setSelectedChat((c) => (c ? { ...c, pinnedMessages: list } : c));
         setChats((prev) =>
-          prev.map((c) => (c.id === selectedChat.id ? { ...c, pinnedMessage: pm } : c))
+          prev.map((c) => (c.id === selectedChat.id ? { ...c, pinnedMessages: list } : c))
         );
       })
-      .catch(console.error);
+      .catch((e) => alert(e.message || 'Ошибка закрепления'));
   };
 
   const handleEditMessage = (messageId, text) => {
@@ -1726,13 +2534,38 @@ export default function ChatsPage() {
       .catch(console.error);
   };
 
-  const handleUnpin = () => {
+  const handleUnpin = (messageId) => {
     if (!selectedChat) return;
-    unpinMessage(selectedChat.id)
-      .then(() => {
-        setSelectedChat((c) => (c ? { ...c, pinnedMessage: null } : c));
+    unpinMessage(selectedChat.id, messageId)
+      .then(({ pinnedMessages }) => {
+        const list = pinnedMessages || [];
+        setSelectedChat((c) => (c ? { ...c, pinnedMessages: list } : c));
         setChats((prev) =>
-          prev.map((c) => (c.id === selectedChat.id ? { ...c, pinnedMessage: null } : c))
+          prev.map((c) => (c.id === selectedChat.id ? { ...c, pinnedMessages: list } : c))
+        );
+      })
+      .catch(console.error);
+  };
+
+  const handlePinPost = (postId) => {
+    if (!selectedChannel) return;
+    pinPost(selectedChannel.id, postId)
+      .then(({ pinnedPosts }) => {
+        setSelectedChannel((c) => (c ? { ...c, pinnedPosts: pinnedPosts || [] } : c));
+        setChannels((prev) =>
+          prev.map((c) => (c.id === selectedChannel.id ? { ...c, pinnedPosts: pinnedPosts || [] } : c))
+        );
+      })
+      .catch(console.error);
+  };
+
+  const handleUnpinPost = (postId) => {
+    if (!selectedChannel) return;
+    unpinPost(selectedChannel.id, postId)
+      .then(({ pinnedPosts }) => {
+        setSelectedChannel((c) => (c ? { ...c, pinnedPosts: pinnedPosts || [] } : c));
+        setChannels((prev) =>
+          prev.map((c) => (c.id === selectedChannel.id ? { ...c, pinnedPosts: pinnedPosts || [] } : c))
         );
       })
       .catch(console.error);
@@ -2018,7 +2851,7 @@ export default function ChatsPage() {
         )}
       </aside>
 
-      <main className="flex-1 flex min-w-0 bg-gradient-to-br from-slate-950 via-slate-900/95 to-slate-950">
+        <main className="flex-1 flex min-w-0 bg-gradient-to-br from-slate-950 via-slate-900/95 to-slate-950">
         <ChatWindow
           chat={selectedChat}
           channel={selectedChannel}
@@ -2026,17 +2859,18 @@ export default function ChatsPage() {
           posts={posts}
           postsLoading={postsLoading}
           onSend={handleSendMessage}
+          onMessageSent={(msg) => setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
           onAddReaction={handleAddReaction}
           onRemoveReaction={handleRemoveReaction}
           onSendPost={(text, mediaFiles) => {
             if (!selectedChannel) return;
-            createPost(selectedChannel.id, text, mediaFiles)
+            return createPost(selectedChannel.id, text, mediaFiles)
               .then((post) => {
-                setPosts((prev) => (prev.some((p) => p.id === post.id) ? prev : [post, ...prev]));
+                setPosts((prev) => (prev.some((p) => p.id === post.id) ? prev : [...prev, post]));
               })
-              .catch(console.error);
+              .catch((err) => { console.error(err); throw err; });
           }}
           onPostReact={(postId, emoji) => {
             reactToPost(postId, emoji)
@@ -2063,14 +2897,23 @@ export default function ChatsPage() {
           loadingMore={loadingMore}
           hasMore={messagesHasMore}
           onLoadMore={loadMoreMessages}
-          pinnedMessage={selectedChat?.pinnedMessage}
+          pinnedMessages={selectedChat?.pinnedMessages ?? (selectedChat?.pinnedMessage ? [selectedChat.pinnedMessage] : [])}
+          pinnedPosts={selectedChannel?.pinnedPosts ?? []}
           onPin={handlePin}
           onUnpin={handleUnpin}
+          onPinPost={handlePinPost}
+          onUnpinPost={handleUnpinPost}
           userStatus={userStatus}
           typingUser={typingUser}
           socket={socket}
-          onUpdateChat={(updated) => setSelectedChat((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
-          onUpdateChannel={(updated) => setSelectedChannel((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev))}
+          onUpdateChat={(updated) => {
+            setSelectedChat((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev));
+            setChats((prev) => prev.map((c) => (c.id === updated?.id ? { ...c, ...updated } : c)));
+          }}
+          onUpdateChannel={(updated) => {
+            setSelectedChannel((prev) => (prev?.id === updated?.id ? { ...prev, ...updated } : prev));
+            setChannels((prev) => prev.map((c) => (c.id === updated?.id ? { ...c, ...updated } : c)));
+          }}
           onCloseSettings={(opts) => {
             if (opts?.left || opts?.deleted) {
               setSelectedChat(null);
@@ -2259,12 +3102,31 @@ export default function ChatsPage() {
         >
           <button
             type="button"
-            onClick={closeViewer}
-            className="absolute top-5 right-5 text-white/70 hover:text-white z-[210]"
-            aria-label="Закрыть"
+            onClick={handleViewerForward}
+            className="absolute top-5 right-20 p-2 rounded-full bg-black/50 hover:bg-white/10 text-white z-[210] transition-all backdrop-blur-md border border-white/10"
+            title="Переслать"
           >
-            <X size={32} />
+            <Forward size={24} />
           </button>
+          <div className="absolute top-4 right-4 z-[210] flex items-center gap-3">
+
+            <button
+              type="button"
+              onClick={handleViewerDownload}
+              className="p-3 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white hover:bg-white/20 transition-all shadow-lg"
+              title="Скачать"
+            >
+              <Download size={20} />
+            </button>
+            <button
+              type="button"
+              onClick={closeViewer}
+              className="p-3 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white hover:bg-red-500/80 transition-all shadow-lg"
+              title="Закрыть"
+            >
+              <X size={20} />
+            </button>
+          </div>
 
           {viewerData.images.length > 1 && (
             <button
@@ -2315,6 +3177,15 @@ export default function ChatsPage() {
           )}
         </div>
       )}
+
+      <ForwardModal
+        isOpen={!!forwardData}
+        forwardData={forwardData}
+        onClose={() => setForwardData(null)}
+        chats={chats}
+        channels={channels}
+        currentUser={user}
+      />
     </div>
   );
 }

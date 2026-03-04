@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings, Smile, LogOut } from 'lucide-react';
+import { Paperclip, Send, MessageCircle, Bell, BellOff, X, ArrowLeft, Settings, Smile, LogOut, Pin, ChevronRight, FileText } from 'lucide-react';
 import {
   getChannel,
   getChannelPosts,
@@ -10,9 +10,12 @@ import {
   addComment,
   joinChannel,
   unsubscribeChannel,
+  pinPost,
+  unpinPost,
 } from '../api';
 import ChannelSettingsModal from '../components/ChannelSettingsModal';
 import MediaPicker from '../components/MediaPicker';
+import { FileCard } from '../components/FileCard';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
@@ -28,7 +31,8 @@ function PostCard({ post, onReact, onCommentClick, onContextMenu }) {
 
   return (
     <div
-      className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg overflow-hidden flex flex-col h-auto"
+      id={`post-${post.id}`}
+      className="bg-white/10 backdrop-blur-sm border border-white/5 rounded-2xl rounded-tl-sm shadow-lg overflow-hidden flex flex-col h-auto scroll-mt-4"
       onContextMenu={(e) => onContextMenu?.(e, post)}
     >
       {hasMedia && hasImageOrVideo && (
@@ -62,21 +66,30 @@ function PostCard({ post, onReact, onCommentClick, onContextMenu }) {
             )}
           </div>
           <div>
-            <span className="font-semibold text-gray-100 block">{post.author?.username}</span>
-            <span className="text-sm text-gray-500">{new Date(post.createdAt).toLocaleString('ru')}</span>
+            <span className="font-semibold text-gray-100 block max-w-full truncate">{post.author?.username}</span>
+            <span className="text-sm text-gray-500">
+              {post.forwardedFrom && <span className="text-gray-400">Переслано от: {post.forwardedFrom} • </span>}
+              {new Date(post.createdAt).toLocaleString('ru')}
+            </span>
           </div>
         </div>
 
         {post.content && (
-          <div className="mb-4 whitespace-pre-wrap break-words text-gray-200">{post.content}</div>
+          <div className="mb-4 whitespace-pre-wrap break-words min-w-0 text-gray-200 pb-1">{post.content}</div>
+        )}
+
+        {mediaUrls.some((_, i) => (mediaTypes[i] || '') === 'audio') && (
+          <div className="mb-4 flex flex-col gap-2">
+            {mediaUrls.map((url, i) => (mediaTypes[i] || '') === 'audio' ? (
+              <audio key={i} src={url} controls className="w-full max-w-md h-10" />
+            ) : null)}
+          </div>
         )}
 
         {mediaUrls.some((_, i) => (mediaTypes[i] || '') === 'document') && (
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="mb-4 flex flex-col gap-3 px-4">
             {mediaUrls.map((url, i) => (mediaTypes[i] || '') === 'document' ? (
-              <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">
-                <Paperclip size={14} /> Открыть файл
-              </a>
+              <FileCard key={i} url={url} className="w-full" />
             ) : null)}
           </div>
         )}
@@ -177,7 +190,7 @@ function CommentThread({ post, onClose, socket }) {
         <div className="mb-4 p-3 rounded-xl bg-white/10 border border-white/5">
           <strong className="text-blue-400">{post.author?.username}</strong>
           <span className="text-sm text-gray-500"> — {new Date(post.createdAt).toLocaleString('ru')}</span>
-          <div className="mt-2 text-gray-200 text-sm">{post.content}</div>
+          <div className="mt-2 text-gray-200 text-sm whitespace-pre-wrap break-words min-w-0 pb-1">{post.content}</div>
         </div>
         {loading ? (
           <p className="text-gray-500">Загрузка...</p>
@@ -193,7 +206,7 @@ function CommentThread({ post, onClose, socket }) {
               </div>
               <div className="flex-1 min-w-0">
                 <span className="font-medium text-gray-100 text-sm">{c.author?.username}</span>
-                <p className="text-gray-200 text-sm mt-0.5">{c.content}</p>
+                <p className="text-gray-200 text-sm mt-0.5 whitespace-pre-wrap break-words min-w-0 pb-1">{c.content}</p>
                 <span className="text-xs text-gray-500">{new Date(c.createdAt).toLocaleString('ru')}</span>
               </div>
             </div>
@@ -237,9 +250,17 @@ export default function ChannelViewPage() {
   const [muted, setMuted] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [pinnedIndex, setPinnedIndex] = useState(0);
   const fileInputRef = useRef(null);
+  const postsEndRef = useRef(null);
 
   const isMember = channel?.isMember ?? false;
+
+  useEffect(() => {
+    if (posts.length > 0) {
+      postsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [posts.length]);
 
   useEffect(() => {
     if (!id) return;
@@ -247,7 +268,10 @@ export default function ChannelViewPage() {
       .then(setChannel)
       .catch(console.error);
     getChannelPosts(id)
-      .then(setPosts)
+      .then((data) => {
+        const raw = Array.isArray(data) ? data : (data?.posts || data?.items || []);
+        setPosts([...raw].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)));
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [id]);
@@ -260,7 +284,7 @@ export default function ChannelViewPage() {
       if (post.channelId !== id) return;
       setPosts((prev) => {
         if (prev.some((p) => p.id === post.id)) return prev;
-        return [post, ...prev];
+        return [...prev, post];
       });
     };
 
@@ -293,29 +317,44 @@ export default function ChannelViewPage() {
     };
   }, [socket, id]);
 
+  useEffect(() => {
+    setPinnedIndex(0);
+  }, [id]);
+
+  const DOC_EXT = ['pdf', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', '7z', 'rar', 'csv'];
+  const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'application/pdf', 'application/zip', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'text/plain', 'application/rtf', 'text/csv'];
+  const getFileType = (file) => {
+    const ext = (file?.name || '').toLowerCase().split('.').pop();
+    if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+    if (ext === 'mp4') return 'video';
+    if (DOC_EXT.includes(ext)) return 'document';
+    return file?.type?.startsWith('video') ? 'video' : file?.type?.startsWith('image') ? 'image' : 'document';
+  };
+  const isAllowed = (file) => DOC_EXT.includes((file?.name || '').toLowerCase().split('.').pop()) || ALLOWED_MIME.includes(file?.type);
+
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'video/mp4'];
-    const maxSize = 20 * 1024 * 1024;
+    const maxSize = 50 * 1024 * 1024;
     const maxPhotos = 20;
     const maxVideos = 8;
-    const valid = files.filter((file) => allowed.includes(file.type) && file.size <= maxSize);
-    if (valid.length < files.length) alert('Разрешены: jpg, png, webp, mp4. Максимум 20 МБ на файл.');
+    const maxDocs = 10;
+    const maxTotal = maxPhotos + maxVideos + maxDocs;
+    const valid = files.filter((file) => isAllowed(file) && file.size <= maxSize);
+    if (valid.length < files.length) alert('Разрешены: jpg, png, webp, gif, mp4, pdf, zip, doc, docx, xls, xlsx, ppt, pptx, txt, rtf, csv. Максимум 50 МБ.');
     if (valid.length === 0) return;
     setMediaFiles((prev) => {
-      const maxTotal = 20;
-      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => ({
-        file,
-        url: URL.createObjectURL(file),
-        type: file.type.startsWith('video') ? 'video' : 'image',
-      }));
+      const newItems = valid.slice(0, maxTotal - prev.length).map((file) => {
+        const type = getFileType(file);
+        return { file, url: type === 'document' ? null : URL.createObjectURL(file), type, fileName: file.name };
+      });
       const combined = [...prev, ...newItems].slice(0, maxTotal);
-      const videoCount = combined.filter((m) => m.type === 'video').length;
-      const photoCount = combined.filter((m) => m.type === 'image').length;
-      if (videoCount > maxVideos || photoCount > maxPhotos) {
+      const vc = combined.filter((m) => m.type === 'video').length;
+      const pc = combined.filter((m) => m.type === 'image').length;
+      const dc = combined.filter((m) => m.type === 'document').length;
+      if (vc > maxVideos || pc > maxPhotos || dc > maxDocs) {
         newItems.forEach((m) => m.url && URL.revokeObjectURL(m.url));
-        alert('Максимум 20 фото и 8 видео');
+        alert('Максимум 20 фото, 8 видео и 10 документов');
         return prev;
       }
       return combined;
@@ -350,7 +389,7 @@ export default function ChannelViewPage() {
       .then((post) => {
         setPosts((prev) => {
           if (prev.some((p) => p.id === post.id)) return prev;
-          return [post, ...prev];
+          return [...prev, post];
         });
         setPostText('');
         clearMedia();
@@ -373,6 +412,24 @@ export default function ChannelViewPage() {
   const handlePostContextMenu = (e, post) => {
     e.preventDefault();
     setMenuPost({ post, x: e.clientX, y: e.clientY });
+  };
+
+  const handlePinPost = (postId) => {
+    if (!id) return;
+    pinPost(id, postId)
+      .then(({ pinnedPosts }) => setChannel((c) => (c ? { ...c, pinnedPosts: pinnedPosts || [] } : c)))
+      .catch(console.error);
+  };
+
+  const handleUnpinPost = (postId) => {
+    if (!id) return;
+    unpinPost(id, postId)
+      .then(({ pinnedPosts }) => setChannel((c) => (c ? { ...c, pinnedPosts: pinnedPosts || [] } : c)))
+      .catch(console.error);
+  };
+
+  const scrollToPost = (postId) => {
+    document.getElementById(`post-${postId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   if (!channel) return (
@@ -436,6 +493,41 @@ export default function ChannelViewPage() {
           )}
         </header>
 
+        {(() => {
+          const list = channel.pinnedPosts || [];
+          if (list.length === 0) return null;
+          const idx = Math.min(pinnedIndex, list.length - 1);
+          const post = list[idx];
+          return (
+            <div
+              className="flex-shrink-0 mx-3 mt-2 mb-1 px-4 py-2.5 flex items-center gap-2.5 cursor-pointer rounded-xl bg-white/[0.08] backdrop-blur-xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.2),inset_0_1px_0_rgba(255,255,255,0.06)] hover:bg-white/[0.12] transition-all"
+              onClick={() => {
+                scrollToPost(post.id);
+                setPinnedIndex((i) => (i + 1) % list.length);
+              }}
+            >
+              <Pin size={16} className="flex-shrink-0 text-slate-400" />
+              <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
+                <span className="text-sm font-medium text-slate-300 shrink-0">{post.author?.username}</span>
+                <span className="text-slate-500">·</span>
+                <span className="text-sm text-slate-400 truncate">{post.content || 'Медиа'}</span>
+              </div>
+              {list.length > 1 && (
+                <span className="text-xs text-slate-500 shrink-0">{idx + 1}/{list.length}</span>
+              )}
+              <ChevronRight size={16} className="flex-shrink-0 text-slate-500" />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); handleUnpinPost(post.id); }}
+                className="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-white/10 transition-colors"
+                title="Открепить"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          );
+        })()}
+
         <div className="flex-1 overflow-y-auto p-6 pb-8 md:pb-10 flex justify-center">
           {loading ? (
             <p className="text-gray-500">Загрузка постов...</p>
@@ -452,6 +544,7 @@ export default function ChannelViewPage() {
                   onContextMenu={handlePostContextMenu}
                 />
               ))}
+              <div ref={postsEndRef} />
             </div>
           )}
         </div>
@@ -482,7 +575,12 @@ export default function ChannelViewPage() {
                 <div className="flex gap-2 overflow-x-auto pb-3 mb-2 no-scrollbar">
                   {mediaFiles.map((item, i) => (
                     <div key={i} className="relative flex-shrink-0">
-                      {item.type === 'video' ? (
+                      {item.type === 'document' ? (
+                        <div className="h-16 w-24 rounded-lg bg-white/10 border border-white/10 flex flex-col items-center justify-center gap-0.5 p-1.5">
+                          <FileText size={24} className="text-blue-400" />
+                          <span className="text-[10px] text-gray-300 truncate max-w-full" title={item.fileName}>{item.fileName}</span>
+                        </div>
+                      ) : item.type === 'video' ? (
                         <video src={item.url} className="h-16 w-16 rounded-lg object-cover" muted />
                       ) : (
                         <img src={item.url} alt="" className="h-16 w-16 rounded-lg object-cover" />
@@ -495,7 +593,7 @@ export default function ChannelViewPage() {
                 </div>
               )}
               <div className="flex items-end gap-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-2 shadow-2xl w-full max-w-4xl mx-auto">
-                <input ref={fileInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4" onChange={handleFileChange} className="hidden" />
+                <input ref={fileInputRef} type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,application/pdf,application/zip,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,application/rtf,text/csv,.pdf,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf,.csv" onChange={handleFileChange} className="hidden" />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -590,6 +688,23 @@ export default function ChannelViewPage() {
             onClick={(e) => e.stopPropagation()}
             style={{ left: menuPost.x, top: menuPost.y }}
           >
+            {channel?.isAdmin && (
+              (channel.pinnedPosts || []).some((pp) => pp?.id === menuPost.post?.id) ? (
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+                  onClick={() => { handleUnpinPost(menuPost.post?.id); setMenuPost(null); }}
+                >
+                  <Pin size={16} /> Открепить
+                </button>
+              ) : (
+                <button
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
+                  onClick={() => { handlePinPost(menuPost.post?.id); setMenuPost(null); }}
+                >
+                  <Pin size={16} /> Закрепить
+                </button>
+              )
+            )}
             <button
               className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2"
               onClick={() => {

@@ -24,35 +24,73 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Связи
-  messages        Message[]
-  reactions       Reaction[]
-  comments        Comment[]
-  posts           Post[]
-  userChats       UserChat[]
-  createdChannels Channel[] @relation("ChannelCreator")
+  messages           Message[]
+  reactions          Reaction[]
+  comments           Comment[]
+  posts              Post[]
+  userChats          UserChat[]
+  createdChannels    Channel[] @relation("ChannelCreator")
+  userPinnedMessages UserPinnedMessage[]
   channelMembers  ChannelMember[]
   postReactions   PostReaction[]
+  postViews       PostView[]
+  messageViews   MessageView[]
   stories        Story[]
+  storyViews     StoryView[]
   stickerPacks   StickerPack[]
 }
 
 // ============ ЧАТЫ (личные и групповые) ============
 model Chat {
-  id              String   @id @default(uuid())
-  isGroup         Boolean  @default(false)
-  name            String?  // Для групповых чатов
-  description     String?  // Описание группы
-  hideMembers     Boolean  @default(false) // Скрывать список участников от не-админов
-  avatar          String?  // Аватар группового чата
-  pinnedMessageId String?
-  pinnedMessage   Message? @relation("PinnedMessage", fields: [pinnedMessageId], references: [id], onDelete: SetNull)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id        String   @id @default(uuid())
+  isGroup   Boolean  @default(false)
+  name      String?  // Для групповых чатов
+  description String?  // Описание группы
+  hideMembers Boolean  @default(false) // Скрывать список участников от не-админов
+  avatar    String?  // Аватар группового чата
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  messages   Message[]
-  userChats  UserChat[]
+  messages           Message[]
+  userChats          UserChat[]
+  pinnedMessages     ChatPinnedMessage[]
+  userPinnedMessages UserPinnedMessage[]
 
-  @@index([pinnedMessageId])
+  @@index([updatedAt])
+}
+
+// Закреплённые сообщения в чате для всех (ЛС: до 15, группы: до 30)
+model ChatPinnedMessage {
+  id        String   @id @default(uuid())
+  chatId    String
+  messageId String
+  order     Int      @default(0)
+  pinnedAt  DateTime @default(now())
+
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, messageId])
+  @@index([chatId])
+  @@index([messageId])
+}
+
+// Закреплённые сообщения только для себя (видит только тот, кто закрепил)
+model UserPinnedMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  chatId    String
+  messageId String
+  order     Int      @default(0)
+  pinnedAt  DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, chatId, messageId])
+  @@index([userId])
+  @@index([chatId])
 }
 
 // Связь пользователей с чатами (участники)
@@ -76,6 +114,7 @@ model UserChat {
 model Message {
   id        String   @id @default(uuid())
   text      String
+  isSystem  Boolean  @default(false) // системное уведомление (напр. "Пользователь X закрепил сообщение")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   editedAt  DateTime?
@@ -91,12 +130,15 @@ model Message {
   chatId   String
   chat     Chat   @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
-  replyToId String?
-  replyTo   Message?  @relation("Replies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies   Message[] @relation("Replies")
+  replyToId     String?
+  replyTo       Message?  @relation("Replies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies       Message[] @relation("Replies")
+  forwardedFrom String?   // оригинальный отправитель при пересылке (например "username")
 
-  reactions Reaction[]
-  pinnedInChats Chat[] @relation("PinnedMessage")
+  reactions           Reaction[]
+  views               MessageView[]
+  pinnedInChats       ChatPinnedMessage[]
+  pinnedByUsers        UserPinnedMessage[]
 
   @@index([chatId])
   @@index([senderId])
@@ -115,14 +157,31 @@ model Channel {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  creatorId String
-  creator   User   @relation("ChannelCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  creatorId   String
+  creator     User    @relation("ChannelCreator", fields: [creatorId], references: [id], onDelete: Cascade)
 
-  posts    Post[]
-  members  ChannelMember[]
+  posts       Post[]
+  members     ChannelMember[]
+  pinnedPosts ChannelPinnedPost[]
 
   @@index([slug])
   @@index([creatorId])
+}
+
+// Закреплённые посты в канале (до 50)
+model ChannelPinnedPost {
+  id        String   @id @default(uuid())
+  channelId String
+  postId    String
+  order     Int      @default(0)
+  pinnedAt  DateTime @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  post    Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, postId])
+  @@index([channelId])
+  @@index([postId])
 }
 
 // Участники канала
@@ -155,16 +214,34 @@ model Post {
 
   authorId  String
   author    User    @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  channelId String
-  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  viewCount Int     @default(0)
+  channelId     String
+  channel       Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  viewCount     Int     @default(0)
+  forwardedFrom String? // оригинальный отправитель при пересылке (например "username")
 
-  comments  Comment[]
-  reactions PostReaction[]
+  comments       Comment[]
+  reactions      PostReaction[]
+  views          PostView[]
+  pinnedInChannels ChannelPinnedPost[]
 
   @@index([channelId])
   @@index([authorId])
   @@index([createdAt])
+}
+
+// ============ УНИКАЛЬНЫЕ ПРОСМОТРЫ СООБЩЕНИЙ ============
+model MessageView {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([messageId])
+  @@index([userId])
 }
 
 // ============ РЕАКЦИИ НА СООБЩЕНИЯ ============
@@ -180,6 +257,21 @@ model Reaction {
 
   @@unique([userId, messageId, emoji])
   @@index([messageId])
+}
+
+// ============ УНИКАЛЬНЫЕ ПРОСМОТРЫ ПОСТОВ ============
+model PostView {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([postId])
+  @@index([userId])
 }
 
 // ============ РЕАКЦИИ НА ПОСТЫ ============
@@ -252,7 +344,23 @@ model Story {
 
   authorId  String
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  storyViews StoryView[]
 
   @@index([authorId])
   @@index([expiresAt])
+}
+
+// ============ УНИКАЛЬНЫЕ ПРОСМОТРЫ ИСТОРИЙ ============
+model StoryView {
+  id        String   @id @default(uuid())
+  storyId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, userId])
+  @@index([storyId])
+  @@index([userId])
 }

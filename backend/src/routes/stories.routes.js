@@ -199,6 +199,40 @@ router.get('/archive', async (req, res) => {
   }
 });
 
+// POST /api/stories/:id/view — идемпотентная фиксация уникального просмотра
+router.post('/:id/view', async (req, res) => {
+  try {
+    const storyId = req.params.id;
+    const userId = req.user.id;
+
+    const story = await prisma.story.findFirst({
+      where: { id: storyId },
+    });
+    if (!story) return res.status(404).json({ error: 'История не найдена' });
+
+    const now = new Date();
+    if (story.expiresAt < now) {
+      return res.status(410).json({ error: 'История истекла' });
+    }
+
+    const existingView = await prisma.storyView.findUnique({
+      where: { storyId_userId: { storyId, userId } },
+    });
+
+    if (!existingView) {
+      await prisma.storyView.create({
+        data: { storyId, userId },
+      });
+    }
+
+    const viewsCount = await prisma.storyView.count({ where: { storyId } });
+    res.json({ views: viewsCount });
+  } catch (err) {
+    console.error('View story error:', err);
+    res.status(500).json({ error: 'Ошибка фиксации просмотра' });
+  }
+});
+
 // DELETE /api/stories/:id
 router.delete('/:id', async (req, res) => {
   try {

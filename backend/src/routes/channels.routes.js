@@ -18,25 +18,27 @@ if (!fs.existsSync(AVATARS_DIR)) {
   fs.mkdirSync(AVATARS_DIR, { recursive: true });
 }
 
+const DOCUMENT_EXTS = ['.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.rtf', '.7z', '.rar', '.csv'];
+const POST_ALLOWED_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mp3', '.wav', '.ogg', '.m4a', ...DOCUMENT_EXTS];
+
 const mediaStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, MEDIA_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || '.jpg';
-    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.mp4'];
-    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    const safeExt = POST_ALLOWED_EXTS.includes(ext.toLowerCase()) ? ext : '.jpg';
     cb(null, `${req.user.id}-${Date.now()}${safeExt}`);
   },
 });
 
 const uploadMedia = multer({
   storage: mediaStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB (для документов)
   fileFilter: (_req, file, cb) => {
-    const allowed = /\.(jpg|jpeg|png|webp|mp4)$/i;
+    const allowed = /\.(jpg|jpeg|png|webp|gif|mp4|webm|mp3|wav|ogg|m4a|pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|7z|rar|csv)$/i;
     if (allowed.test(file.originalname)) {
       cb(null, true);
     } else {
-      cb(new Error('Разрешены: jpg, png, webp, mp4'));
+      cb(new Error('Разрешены: jpg, png, webp, gif, mp4, webm, mp3, wav, ogg, m4a, pdf, zip, doc, docx, xls, xlsx, ppt, pptx, txt, rtf, 7z, rar, csv'));
     }
   },
 });
@@ -63,8 +65,10 @@ const uploadChannelAvatar = multer({
 
 function getMediaType(filename) {
   const ext = (filename || '').toLowerCase().split('.').pop();
-  if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return 'image';
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
   if (ext === 'mp4') return 'video';
+  if (['webm', 'mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return 'audio';
+  if (['pdf', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', '7z', 'rar', 'csv'].includes(ext)) return 'document';
   return 'document';
 }
 
@@ -99,10 +103,12 @@ router.get('/', async (req, res) => {
         const mem = await prisma.channelMember.findUnique({
           where: { userId_channelId: { userId: req.user.id, channelId: ch.id } },
         });
+        const canPost = ch.creatorId === req.user.id || mem?.role === 'admin' || mem?.role === 'moderator';
         return {
           ...ch,
           isMember: !!mem,
           isAdmin: ch.creatorId === req.user.id || mem?.role === 'admin',
+          canPost,
         };
       })
     );
@@ -148,6 +154,8 @@ router.post('/', async (req, res) => {
   }
 });
 
+const PIN_LIMIT_CHANNEL = 50;
+
 // GET /api/channels/:id — канал по ID
 router.get('/:id', async (req, res) => {
   try {
@@ -159,6 +167,18 @@ router.get('/:id', async (req, res) => {
         members: {
           include: { user: { select: { id: true, username: true, avatar: true } } },
         },
+        pinnedPosts: {
+          orderBy: { order: 'asc' },
+          include: {
+            post: {
+              include: {
+                author: { select: { id: true, username: true, avatar: true } },
+                _count: { select: { comments: true, reactions: true, views: true } },
+                reactions: { include: { user: { select: { id: true } } } },
+              },
+            },
+          },
+        },
       },
     });
     if (!channel) return res.status(404).json({ error: 'Канал не найден' });
@@ -166,10 +186,29 @@ router.get('/:id', async (req, res) => {
       where: { userId_channelId: { userId: req.user.id, channelId: channel.id } },
     });
     const isAdmin = channel.creatorId === req.user.id || mem?.role === 'admin';
+    const canPost = channel.creatorId === req.user.id || mem?.role === 'admin' || mem?.role === 'moderator';
+    const pinnedPosts = (channel.pinnedPosts || []).map((pp) => {
+      const p = pp.post;
+      if (!p) return null;
+      const byEmoji = {};
+      (p.reactions || []).forEach((r) => { byEmoji[r.emoji] = (byEmoji[r.emoji] || 0) + 1; });
+      const userReacted = (p.reactions || []).find((r) => r.userId === req.user.id)?.emoji || null;
+      const { reactions, ...rest } = p;
+      return {
+        ...rest,
+        viewCount: p._count?.views ?? p.viewCount ?? 0,
+        reactionCounts: byEmoji,
+        commentCount: p._count?.comments ?? 0,
+        userReacted,
+      };
+    }).filter(Boolean);
+    const { pinnedPosts: _pp, ...channelRest } = channel;
     const result = {
-      ...channel,
+      ...channelRest,
+      pinnedPosts,
       isMember: !!mem || channel.creatorId === req.user.id,
       isAdmin,
+      canPost,
     };
     if (channel.hideMembers && !isAdmin) {
       result.members = [];
@@ -251,22 +290,117 @@ router.delete('/:id/subscribe', async (req, res) => {
   }
 });
 
+// PUT /api/channels/:id/pin — закрепить пост (до 50)
+router.put('/:id/pin', async (req, res) => {
+  try {
+    const { postId } = req.body;
+    if (!postId) return res.status(400).json({ error: 'Укажите postId' });
+
+    const channel = await prisma.channel.findFirst({
+      where: { id: req.params.id },
+      include: {
+        pinnedPosts: { orderBy: { order: 'asc' } },
+        members: { select: { userId: true } },
+      },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+
+    const mem = await prisma.channelMember.findUnique({
+      where: { userId_channelId: { userId: req.user.id, channelId: req.params.id } },
+    });
+    const isAdmin = channel.creatorId === req.user.id || mem?.role === 'admin';
+    if (!isAdmin) return res.status(403).json({ error: 'Только админ может закреплять' });
+
+    const currentCount = channel.pinnedPosts?.length ?? 0;
+    if (currentCount >= PIN_LIMIT_CHANNEL) return res.status(400).json({ error: `Достигнут лимит закреплённых (${PIN_LIMIT_CHANNEL})` });
+
+    const post = await prisma.post.findFirst({
+      where: { id: postId, channelId: req.params.id, isDeleted: false },
+      include: { author: { select: { id: true, username: true, avatar: true } } },
+    });
+    if (!post) return res.status(404).json({ error: 'Пост не найден' });
+
+    const existing = await prisma.channelPinnedPost.findUnique({
+      where: { channelId_postId: { channelId: req.params.id, postId } },
+    });
+    if (existing) return res.status(400).json({ error: 'Пост уже закреплён' });
+
+    const maxOrder = channel.pinnedPosts?.length ? Math.max(...channel.pinnedPosts.map((pp) => pp.order)) : -1;
+    await prisma.channelPinnedPost.create({
+      data: { channelId: req.params.id, postId, order: maxOrder + 1 },
+    });
+
+    const pinned = await prisma.channelPinnedPost.findMany({
+      where: { channelId: req.params.id },
+      orderBy: { order: 'asc' },
+      include: { post: { include: { author: { select: { id: true, username: true, avatar: true } } } } },
+    });
+    const pinnedPosts = pinned.map((pp) => pp.post);
+
+    res.json({ success: true, pinnedPost: post, pinnedPosts });
+  } catch (err) {
+    console.error('Pin post error:', err);
+    res.status(500).json({ error: 'Ошибка закрепления' });
+  }
+});
+
+// PUT /api/channels/:id/unpin — открепить пост
+router.put('/:id/unpin', async (req, res) => {
+  try {
+    const { postId } = req.body;
+    if (!postId) return res.status(400).json({ error: 'Укажите postId' });
+
+    const channel = await prisma.channel.findFirst({
+      where: { id: req.params.id },
+      include: { members: { select: { userId: true } } },
+    });
+    if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+
+    const mem = await prisma.channelMember.findUnique({
+      where: { userId_channelId: { userId: req.user.id, channelId: req.params.id } },
+    });
+    const isAdmin = channel.creatorId === req.user.id || mem?.role === 'admin';
+    if (!isAdmin) return res.status(403).json({ error: 'Только админ может откреплять' });
+
+    await prisma.channelPinnedPost.deleteMany({
+      where: { channelId: req.params.id, postId },
+    });
+
+    const pinned = await prisma.channelPinnedPost.findMany({
+      where: { channelId: req.params.id },
+      orderBy: { order: 'asc' },
+      include: { post: { include: { author: { select: { id: true, username: true, avatar: true } } } } },
+    });
+    const pinnedPosts = pinned.map((pp) => pp.post);
+
+    res.json({ success: true, pinnedPost: null, pinnedPosts });
+  } catch (err) {
+    console.error('Unpin post error:', err);
+    res.status(500).json({ error: 'Ошибка открепления' });
+  }
+});
+
 // GET /api/channels/:id/posts — посты канала
 router.get('/:id/posts', async (req, res) => {
   try {
     const channel = await prisma.channel.findFirst({
       where: { id: req.params.id },
+      include: {
+        pinnedPosts: { orderBy: { order: 'asc' }, include: { post: true } },
+      },
     });
     if (!channel) return res.status(404).json({ error: 'Канал не найден' });
+
+    const pinnedPostIds = (channel.pinnedPosts || []).map((pp) => pp.postId);
 
     const posts = await prisma.post.findMany({
       where: { channelId: req.params.id, isDeleted: false },
       include: {
         author: { select: { id: true, username: true, avatar: true } },
-        _count: { select: { comments: true, reactions: true } },
+        _count: { select: { comments: true, reactions: true, views: true } },
         reactions: { include: { user: { select: { id: true } } } },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: 'asc' },
     });
 
     const withReactionSummary = posts.map((p) => {
@@ -276,15 +410,18 @@ router.get('/:id/posts', async (req, res) => {
       });
       const userReacted = p.reactions.find((r) => r.userId === req.user.id)?.emoji || null;
       const { reactions, ...rest } = p;
+      const viewCount = p._count?.views ?? p.viewCount ?? 0;
       return {
         ...rest,
+        viewCount,
         reactionCounts: byEmoji,
         commentCount: p._count.comments,
         userReacted,
+        isPinned: pinnedPostIds.includes(p.id),
       };
     });
 
-    res.json(withReactionSummary);
+    res.json({ posts: withReactionSummary, pinnedPostIds });
   } catch (err) {
     console.error('Get posts error:', err);
     res.status(500).json({ error: 'Ошибка загрузки постов' });
@@ -295,6 +432,7 @@ router.get('/:id/posts', async (req, res) => {
 router.post('/:id/posts', uploadMedia.array('media', 20), async (req, res) => {
   try {
     const content = (req.body.content || '').trim();
+    const forwardedFrom = (req.body.forwardedFrom || '').trim() || null;
     const files = Array.isArray(req.files) ? req.files : [];
     const hasMedia = files.length > 0;
 
@@ -340,6 +478,7 @@ router.post('/:id/posts', uploadMedia.array('media', 20), async (req, res) => {
       content: content || '',
       authorId: req.user.id,
       channelId: req.params.id,
+      forwardedFrom: forwardedFrom || undefined,
       mediaUrls: [],
       mediaTypes: [],
     };
@@ -387,7 +526,8 @@ router.post('/:id/posts', uploadMedia.array('media', 20), async (req, res) => {
 // PUT /api/channels/:id — обновление названия, описания и hideMembers (только creatorId)
 router.put('/:id', async (req, res) => {
   try {
-    const { name, description, hideMembers } = req.body;
+    const body = req.body || {};
+    const { name, description, hideMembers } = body;
 
     const channel = await prisma.channel.findUnique({
       where: { id: req.params.id },

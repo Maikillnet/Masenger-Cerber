@@ -11,6 +11,8 @@
     "dev:backend": "npm run dev -w backend",
     "dev:frontend": "npm run dev -w frontend",
     "db:migrate": "npm run db:migrate -w backend",
+    "db:push": "npm run db:push -w backend",
+    "db:generate": "npm run db:generate -w backend",
     "db:seed": "npm run db:seed -w backend",
     "db:studio": "npm run db:studio -w backend",
     "test": "npm run test -w backend"

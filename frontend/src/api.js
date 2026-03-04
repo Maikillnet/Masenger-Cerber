@@ -135,21 +135,44 @@ export async function createGroupChat(name, participantIds) {
   return data;
 }
 
-export async function pinMessage(chatId, messageId) {
+export async function pinMessage(chatId, messageId, visibility = 'all') {
   const res = await fetch(`${API_BASE}/chats/${chatId}/pin`, {
     method: 'PUT',
     headers: getHeaders(),
-    body: JSON.stringify({ messageId }),
+    body: JSON.stringify({ messageId, visibility }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка закрепления');
   return data;
 }
 
-export async function unpinMessage(chatId) {
+export async function unpinMessage(chatId, messageId) {
   const res = await fetch(`${API_BASE}/chats/${chatId}/unpin`, {
     method: 'PUT',
     headers: getHeaders(),
+    body: JSON.stringify({ messageId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка открепления');
+  return data;
+}
+
+export async function pinPost(channelId, postId) {
+  const res = await fetch(`${API_BASE}/channels/${channelId}/pin`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ postId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка закрепления');
+  return data;
+}
+
+export async function unpinPost(channelId, postId) {
+  const res = await fetch(`${API_BASE}/channels/${channelId}/unpin`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ postId }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка открепления');
@@ -166,7 +189,28 @@ export async function getMessages(chatId, cursor = null) {
   return data;
 }
 
-export async function sendMessage(chatId, text, mediaFiles = [], replyToId = null, stickerUrl = null) {
+/** Переслать медиа (фото/видео/стикер) в чат или канал. url — путь к файлу, type — image|video|document|sticker, forwardedFrom — оригинальный отправитель */
+export async function forwardMedia(targetId, isChannel, { url, type, forwardedFrom }) {
+  if (!url) throw new Error('Нет медиа для пересылки');
+  if (type === 'sticker' && !isChannel) {
+    return sendMessage(targetId, '', [], null, url, forwardedFrom);
+  }
+  const fullUrl =
+    url.startsWith('http') || url.startsWith('blob:') || url.startsWith('data:')
+      ? url
+      : `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;
+  const res = await fetch(fullUrl);
+  if (!res.ok) throw new Error('Не удалось загрузить файл');
+  const blob = await res.blob();
+  const ext = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
+  const file = new File([blob], `forward_${Date.now()}.${ext}`, { type: blob.type });
+  if (isChannel) {
+    return createPost(targetId, '', [file], forwardedFrom);
+  }
+  return sendMessage(targetId, '', [file], null, null, forwardedFrom);
+}
+
+export async function sendMessage(chatId, text, mediaFiles = [], replyToId = null, stickerUrl = null, forwardedFrom = null) {
   const token = localStorage.getItem('token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
@@ -178,6 +222,7 @@ export async function sendMessage(chatId, text, mediaFiles = [], replyToId = nul
     formData.append('text', text || '');
     files.forEach((file) => formData.append('media', file));
     if (replyToId) formData.append('replyToId', replyToId);
+    if (forwardedFrom) formData.append('forwardedFrom', forwardedFrom);
     body = formData;
   } else {
     headers['Content-Type'] = 'application/json';
@@ -185,6 +230,7 @@ export async function sendMessage(chatId, text, mediaFiles = [], replyToId = nul
       text: text || '',
       replyToId: replyToId || undefined,
       stickerUrl: stickerUrl || undefined,
+      forwardedFrom: forwardedFrom || undefined,
     });
   }
 
@@ -262,21 +308,17 @@ export async function markChatRead(chatId) {
   return data;
 }
 
-// Группы — настройки
-export async function updateGroupName(chatId, name) {
-  const res = await fetch(`${API_BASE}/chats/${chatId}/name`, {
-    method: 'PUT',
-    headers: getHeaders(),
-    body: JSON.stringify({ name: name.trim() }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
-  return data;
-}
-
+// Группы — настройки (name, description, hideMembers — один запрос)
 export async function updateGroupSettings(chatId, payload) {
-  const body = { ...payload };
-  if (body.name !== undefined && !String(body.name ?? '').trim()) delete body.name;
+  const body = {};
+  const name = payload.name;
+  if (name !== undefined && name !== null) {
+    const t = String(name).trim();
+    if (t) body.name = t;
+  }
+  if (payload.description !== undefined) body.description = payload.description == null ? null : String(payload.description ?? '').trim() || null;
+  if (payload.hideMembers !== undefined) body.hideMembers = Boolean(payload.hideMembers);
+  if (Object.keys(body).length === 0) return {};
   const res = await fetch(`${API_BASE}/chats/${chatId}/name`, {
     method: 'PUT',
     headers: getHeaders(),
@@ -410,19 +452,29 @@ export async function unsubscribeChannel(id) {
   return data;
 }
 
-// Каналы — настройки
-export async function updateChannel(channelId, { name, description, hideMembers }) {
+// Каналы — настройки (name, description, hideMembers — один запрос)
+export async function updateChannel(channelId, payload) {
   const body = {};
-  if (name !== undefined && String(name ?? '').trim()) body.name = String(name).trim();
-  if (description !== undefined) body.description = description;
-  if (hideMembers !== undefined) body.hideMembers = hideMembers;
+  const name = payload?.name;
+  if (name !== undefined && name !== null) {
+    const t = String(name).trim();
+    if (t) body.name = t;
+  }
+  if (payload?.description !== undefined) body.description = payload.description == null ? null : String(payload.description ?? '').trim() || null;
+  if (payload?.hideMembers !== undefined) body.hideMembers = Boolean(payload.hideMembers);
+  if (Object.keys(body).length === 0) return {};
   const res = await fetch(`${API_BASE}/channels/${channelId}`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(res.status === 400 ? 'Неверный запрос' : 'Ошибка обновления');
+  }
+  if (!res.ok) throw new Error(data?.error || 'Ошибка обновления');
   return data;
 }
 
@@ -482,7 +534,7 @@ export async function getChannelPosts(channelId) {
   return data;
 }
 
-export async function createPost(channelId, content, mediaFiles = []) {
+export async function createPost(channelId, content, mediaFiles = [], forwardedFrom = null) {
   const token = localStorage.getItem('token');
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const files = Array.isArray(mediaFiles) ? mediaFiles : mediaFiles ? [mediaFiles] : [];
@@ -492,10 +544,11 @@ export async function createPost(channelId, content, mediaFiles = []) {
     const formData = new FormData();
     formData.append('content', content || '');
     files.forEach((file) => formData.append('media', file));
+    if (forwardedFrom) formData.append('forwardedFrom', forwardedFrom);
     body = formData;
   } else {
     headers['Content-Type'] = 'application/json';
-    body = JSON.stringify({ content: content || '' });
+    body = JSON.stringify({ content: content || '', forwardedFrom: forwardedFrom || undefined });
   }
 
   const res = await fetch(`${API_BASE}/channels/${channelId}/posts`, {
@@ -512,6 +565,16 @@ export async function getPost(id) {
   const res = await fetch(`${API_BASE}/posts/${id}`, { headers: getHeaders() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Пост не найден');
+  return data;
+}
+
+export async function markPostAsViewed(postId) {
+  const res = await fetch(`${API_BASE}/posts/${postId}/view`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка фиксации просмотра');
   return data;
 }
 
@@ -578,6 +641,26 @@ export async function getMyStoriesArchive() {
   const res = await fetch(`${API_BASE}/stories/archive`, { headers: getHeaders() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка загрузки архива историй');
+  return data;
+}
+
+export async function markStoryAsViewed(storyId) {
+  const res = await fetch(`${API_BASE}/stories/${storyId}/view`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка фиксации просмотра');
+  return data;
+}
+
+export async function markMessageAsViewed(chatId, messageId) {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/messages/${messageId}/view`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка фиксации просмотра');
   return data;
 }
 

@@ -18,12 +18,14 @@ if (!fs.existsSync(GROUP_AVATARS_DIR)) {
   fs.mkdirSync(GROUP_AVATARS_DIR, { recursive: true });
 }
 
+const DOCUMENT_EXTS = ['.pdf', '.zip', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.rtf', '.7z', '.rar', '.csv'];
+const CHAT_ALLOWED_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mp3', '.wav', '.ogg', '.m4a', ...DOCUMENT_EXTS];
+
 const chatMediaStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, CHAT_MEDIA_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || '.jpg';
-    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4'];
-    const safeExt = allowed.includes(ext.toLowerCase()) ? ext : '.jpg';
+    const safeExt = CHAT_ALLOWED_EXTS.includes(ext.toLowerCase()) ? ext : '.jpg';
     const unique = Math.random().toString(36).slice(2, 9);
     cb(null, `chat-${req.user.id}-${Date.now()}-${unique}${safeExt}`);
   },
@@ -31,11 +33,12 @@ const chatMediaStorage = multer.diskStorage({
 
 const uploadChatMedia = multer({
   storage: chatMediaStorage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB (для видео)
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB (для видео и документов)
   fileFilter: (_req, file, cb) => {
-    const allowed = /\.(jpg|jpeg|png|webp|gif|mp4)$/i;
+    const ext = (path.extname(file.originalname) || '').toLowerCase();
+    const allowed = /\.(jpg|jpeg|png|webp|gif|mp4|webm|mp3|wav|ogg|m4a|pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|7z|rar|csv)$/i;
     if (allowed.test(file.originalname)) cb(null, true);
-    else cb(new Error('Разрешены: jpg, png, webp, gif, mp4'));
+    else cb(new Error('Разрешены: jpg, png, webp, gif, mp4, webm, mp3, wav, ogg, m4a, pdf, zip, doc, docx, xls, xlsx, ppt, pptx, txt, rtf, 7z, rar, csv'));
   },
 });
 
@@ -60,10 +63,13 @@ const uploadGroupAvatar = multer({
 });
 
 function getMediaType(filenameOrFileOrArray) {
+  const docExts = ['pdf', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', '7z', 'rar', 'csv'];
   const getType = (filename) => {
     const ext = (filename || '').toLowerCase().split('.').pop();
     if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
     if (ext === 'mp4') return 'video';
+    if (['webm', 'mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return 'audio';
+    if (docExts.includes(ext)) return 'document';
     return 'document';
   };
   if (Array.isArray(filenameOrFileOrArray)) {
@@ -79,6 +85,24 @@ function getMediaType(filenameOrFileOrArray) {
 }
 
 router.use(authenticateToken);
+
+function mergePinnedForUser(chatPinned, userPinned) {
+  const seen = new Set();
+  const out = [];
+  for (const pm of chatPinned || []) {
+    if (pm?.message?.id && !seen.has(pm.message.id)) {
+      seen.add(pm.message.id);
+      out.push(pm.message);
+    }
+  }
+  for (const pm of userPinned || []) {
+    if (pm?.message?.id && !seen.has(pm.message.id)) {
+      seen.add(pm.message.id);
+      out.push(pm.message);
+    }
+  }
+  return out;
+}
 
 // GET /api/chats — список чатов текущего пользователя
 router.get('/', async (req, res) => {
@@ -102,8 +126,18 @@ router.get('/', async (req, res) => {
             sender: { select: { id: true, username: true } },
           },
         },
-        pinnedMessage: {
-          include: { sender: { select: { id: true, username: true } } },
+        pinnedMessages: {
+          orderBy: { order: 'asc' },
+          include: {
+            message: { include: { sender: { select: { id: true, username: true } } } },
+          },
+        },
+        userPinnedMessages: {
+          where: { userId: req.user.id },
+          orderBy: { order: 'asc' },
+          include: {
+            message: { include: { sender: { select: { id: true, username: true } } } },
+          },
         },
       },
       orderBy: { updatedAt: 'desc' },
@@ -127,7 +161,7 @@ router.get('/', async (req, res) => {
         name: chat.name,
         avatar: chat.avatar,
         otherUser: otherUser || null,
-        pinnedMessage: chat.pinnedMessage || null,
+        pinnedMessages: mergePinnedForUser(chat.pinnedMessages, chat.userPinnedMessages),
         lastMessage: lastMessage
           ? {
               id: lastMessage.id,
@@ -301,9 +335,17 @@ router.get('/:id', async (req, res) => {
             user: { select: { id: true, username: true, avatar: true, status: true } },
           },
         },
-        pinnedMessage: {
+        pinnedMessages: {
+          orderBy: { order: 'asc' },
           include: {
-            sender: { select: { id: true, username: true } },
+            message: { include: { sender: { select: { id: true, username: true } } } },
+          },
+        },
+        userPinnedMessages: {
+          where: { userId: req.user.id },
+          orderBy: { order: 'asc' },
+          include: {
+            message: { include: { sender: { select: { id: true, username: true } } } },
           },
         },
       },
@@ -316,7 +358,7 @@ router.get('/:id', async (req, res) => {
       name: chat.name,
       avatar: chat.avatar,
       otherUser: other,
-      pinnedMessage: chat.pinnedMessage,
+      pinnedMessages: mergePinnedForUser(chat.pinnedMessages, chat.userPinnedMessages),
       participantCount: chat.userChats?.length ?? 0,
       updatedAt: chat.updatedAt,
     };
@@ -369,6 +411,7 @@ router.get('/:id/messages', async (req, res) => {
           include: { sender: { select: { id: true, username: true } } },
         },
         reactions: { include: { user: { select: { id: true, username: true } } } },
+        _count: { select: { views: true } },
       },
     });
 
@@ -418,9 +461,10 @@ router.post('/:id/messages', (req, res, next) => {
   try {
     const text = (req.body.text || '').trim();
     const replyToId = req.body.replyToId || null;
+    const stickerUrl = (req.body.stickerUrl || '').trim() || null;
+    const forwardedFrom = (req.body.forwardedFrom || '').trim() || null;
     const files = Array.isArray(req.files) ? req.files : [];
     const hasMedia = files.length > 0;
-    const stickerUrl = (req.body.stickerUrl || '').trim() || null;
 
     if (!text && !hasMedia && !stickerUrl) {
       return res.status(400).json({ error: 'Укажите текст, прикрепите файл или выберите стикер' });
@@ -464,6 +508,7 @@ router.post('/:id/messages', (req, res, next) => {
       senderId: req.user.id,
       chatId: req.params.id,
       replyToId: replyToId || undefined,
+      forwardedFrom: forwardedFrom || undefined,
       mediaUrls: [],
       mediaTypes: [],
     };
@@ -561,6 +606,41 @@ router.put('/:id/messages/:messageId', async (req, res) => {
   } catch (err) {
     console.error('Edit message error:', err);
     res.status(500).json({ error: 'Ошибка редактирования' });
+  }
+});
+
+// POST /api/chats/:chatId/messages/:messageId/view — идемпотентная фиксация уникального просмотра
+router.post('/:id/messages/:messageId/view', async (req, res) => {
+  try {
+    const chatId = req.params.id;
+    const messageId = req.params.messageId;
+    const userId = req.user.id;
+
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, chatId, isDeleted: false },
+    });
+    if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
+
+    const inChat = await prisma.userChat.findFirst({
+      where: { chatId, userId },
+    });
+    if (!inChat) return res.status(403).json({ error: 'Нет доступа к чату' });
+
+    const existingView = await prisma.messageView.findUnique({
+      where: { messageId_userId: { messageId, userId } },
+    });
+
+    if (!existingView) {
+      await prisma.messageView.create({
+        data: { messageId, userId },
+      });
+    }
+
+    const viewsCount = await prisma.messageView.count({ where: { messageId } });
+    res.json({ views: viewsCount });
+  } catch (err) {
+    console.error('View message error:', err);
+    res.status(500).json({ error: 'Ошибка фиксации просмотра' });
   }
 });
 
@@ -795,13 +875,15 @@ router.delete('/:id/messages/:messageId/react', async (req, res) => {
   }
 });
 
-// PUT /api/chats/:id/pin — закрепить сообщение
+const PIN_LIMIT_LS = 15;
+const PIN_LIMIT_GROUP = 30;
+
+// PUT /api/chats/:id/pin — закрепить сообщение. visibility: 'personal' (только у меня) | 'all' (у всех)
 router.put('/:id/pin', async (req, res) => {
   try {
-    const { messageId } = req.body;
-    if (!messageId) {
-      return res.status(400).json({ error: 'Укажите messageId' });
-    }
+    const { messageId, visibility = 'all' } = req.body;
+    if (!messageId) return res.status(400).json({ error: 'Укажите messageId' });
+    const forAll = visibility === 'all';
 
     const chat = await prisma.chat.findFirst({
       where: {
@@ -810,10 +892,13 @@ router.put('/:id/pin', async (req, res) => {
       },
       include: {
         userChats: true,
-        pinnedMessage: { include: { sender: { select: { id: true, username: true } } } },
+        pinnedMessages: { orderBy: { order: 'asc' }, include: { message: { include: { sender: { select: { id: true, username: true } } } } } },
       },
     });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
+
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    if (forAll && myUserChat?.role !== 'admin' && chat.isGroup) return res.status(403).json({ error: 'Только админ может закреплять для всех' });
 
     const message = await prisma.message.findFirst({
       where: { id: messageId, chatId: req.params.id, isDeleted: false },
@@ -821,29 +906,109 @@ router.put('/:id/pin', async (req, res) => {
     });
     if (!message) return res.status(404).json({ error: 'Сообщение не найдено' });
 
-    await prisma.chat.update({
-      where: { id: req.params.id },
-      data: { pinnedMessageId: messageId },
-    });
+    if (forAll) {
+      const limit = chat.isGroup ? PIN_LIMIT_GROUP : PIN_LIMIT_LS;
+      const currentCount = chat.pinnedMessages?.length ?? 0;
+      if (currentCount >= limit) return res.status(400).json({ error: `Достигнут лимит закреплённых (${limit})` });
 
-    const io = req.app.get('io');
-    if (io) {
-      const participantIds = chat.userChats.map((uc) => uc.userId);
-      participantIds.forEach((id) =>
-        io.to(id).emit('message_pinned', { chatId: req.params.id, message, pinned: true })
-      );
+      const existing = await prisma.chatPinnedMessage.findUnique({
+        where: { chatId_messageId: { chatId: req.params.id, messageId } },
+      });
+      if (existing) return res.status(400).json({ error: 'Сообщение уже закреплено для всех' });
+
+      const maxOrder = chat.pinnedMessages?.length ? Math.max(...chat.pinnedMessages.map((pm) => pm.order)) : -1;
+      await prisma.chatPinnedMessage.create({
+        data: { chatId: req.params.id, messageId, order: maxOrder + 1 },
+      });
+
+      const systemText = `Пользователь ${req.user.username} закрепил данное сообщение`;
+      const systemMsg = await prisma.message.create({
+        data: {
+          chatId: req.params.id,
+          senderId: req.user.id,
+          text: systemText,
+          isSystem: true,
+        },
+        include: {
+          sender: { select: { id: true, username: true, avatar: true } },
+          replyTo: { include: { sender: { select: { id: true, username: true } } } },
+          reactions: { include: { user: { select: { id: true, username: true } } } },
+        },
+      });
+
+      const chatPinned = await prisma.chatPinnedMessage.findMany({
+        where: { chatId: req.params.id },
+        orderBy: { order: 'asc' },
+        include: { message: { include: { sender: { select: { id: true, username: true } } } } },
+      });
+
+      const io = req.app.get('io');
+      if (io) {
+        for (const uc of chat.userChats) {
+          const userPinned = await prisma.userPinnedMessage.findMany({
+            where: { userId: uc.userId, chatId: req.params.id },
+            orderBy: { order: 'asc' },
+            include: { message: { include: { sender: { select: { id: true, username: true } } } } },
+          });
+          const pinnedMessages = mergePinnedForUser(chatPinned, userPinned);
+          io.to(uc.userId).emit('message_pinned', { chatId: req.params.id, message, pinned: true, pinnedMessages });
+        }
+        chat.userChats.forEach((uc) =>
+          io.to(uc.userId).emit('receive_message', { ...systemMsg, chatId: req.params.id })
+        );
+      }
+
+      const userPinnedForRes = await prisma.userPinnedMessage.findMany({
+        where: { userId: req.user.id, chatId: req.params.id },
+        orderBy: { order: 'asc' },
+        include: { message: { include: { sender: { select: { id: true, username: true } } } } },
+      });
+      const pinnedMessages = mergePinnedForUser(chatPinned, userPinnedForRes);
+      return res.json({ success: true, pinnedMessage: message, pinnedMessages });
     }
 
-    res.json({ success: true, pinnedMessage: message });
+    // personal — только у себя
+    const userPinnedCount = await prisma.userPinnedMessage.count({
+      where: { userId: req.user.id, chatId: req.params.id },
+    });
+    const limit = chat.isGroup ? PIN_LIMIT_GROUP : PIN_LIMIT_LS;
+    if (userPinnedCount >= limit) return res.status(400).json({ error: `Достигнут лимит закреплённых (${limit})` });
+
+    const existingUser = await prisma.userPinnedMessage.findUnique({
+      where: { userId_chatId_messageId: { userId: req.user.id, chatId: req.params.id, messageId } },
+    });
+    if (existingUser) return res.status(400).json({ error: 'Вы уже закрепили это сообщение у себя' });
+
+    const maxOrder = await prisma.userPinnedMessage.aggregate({
+      where: { userId: req.user.id, chatId: req.params.id },
+      _max: { order: true },
+    });
+    await prisma.userPinnedMessage.create({
+      data: { userId: req.user.id, chatId: req.params.id, messageId, order: (maxOrder._max?.order ?? -1) + 1 },
+    });
+
+    const [chatPinned, userPinned] = await Promise.all([
+      prisma.chatPinnedMessage.findMany({ where: { chatId: req.params.id }, orderBy: { order: 'asc' }, include: { message: { include: { sender: { select: { id: true, username: true } } } } } }),
+      prisma.userPinnedMessage.findMany({ where: { userId: req.user.id, chatId: req.params.id }, orderBy: { order: 'asc' }, include: { message: { include: { sender: { select: { id: true, username: true } } } } } }),
+    ]);
+    const pinnedMessages = mergePinnedForUser(chatPinned, userPinned);
+
+    const io = req.app.get('io');
+    if (io) io.to(req.user.id).emit('message_pinned', { chatId: req.params.id, message, pinned: true, pinnedMessages });
+
+    res.json({ success: true, pinnedMessage: message, pinnedMessages });
   } catch (err) {
     console.error('Pin message error:', err);
     res.status(500).json({ error: 'Ошибка закрепления' });
   }
 });
 
-// PUT /api/chats/:id/unpin — открепить сообщение
+// PUT /api/chats/:id/unpin — открепить сообщение (messageId в body обязателен)
 router.put('/:id/unpin', async (req, res) => {
   try {
+    const { messageId } = req.body;
+    if (!messageId) return res.status(400).json({ error: 'Укажите messageId' });
+
     const chat = await prisma.chat.findFirst({
       where: {
         id: req.params.id,
@@ -853,20 +1018,45 @@ router.put('/:id/unpin', async (req, res) => {
     });
     if (!chat) return res.status(404).json({ error: 'Чат не найден' });
 
-    await prisma.chat.update({
-      where: { id: req.params.id },
-      data: { pinnedMessageId: null },
+    const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+    const canUnpinForAll = !chat.isGroup || myUserChat?.role === 'admin';
+
+    await prisma.userPinnedMessage.deleteMany({
+      where: { userId: req.user.id, chatId: req.params.id, messageId },
+    });
+    if (canUnpinForAll) {
+      await prisma.chatPinnedMessage.deleteMany({
+        where: { chatId: req.params.id, messageId },
+      });
+    }
+
+    const chatPinned = await prisma.chatPinnedMessage.findMany({
+      where: { chatId: req.params.id },
+      orderBy: { order: 'asc' },
+      include: { message: { include: { sender: { select: { id: true, username: true } } } } },
     });
 
     const io = req.app.get('io');
     if (io) {
-      const participantIds = chat.userChats.map((uc) => uc.userId);
-      participantIds.forEach((id) =>
-        io.to(id).emit('message_pinned', { chatId: req.params.id, pinned: false })
-      );
+      for (const uc of chat.userChats) {
+        const userPinned = await prisma.userPinnedMessage.findMany({
+          where: { userId: uc.userId, chatId: req.params.id },
+          orderBy: { order: 'asc' },
+          include: { message: { include: { sender: { select: { id: true, username: true } } } } },
+        });
+        const pinnedMessages = mergePinnedForUser(chatPinned, userPinned);
+        io.to(uc.userId).emit('message_pinned', { chatId: req.params.id, messageId: messageId || null, pinned: false, pinnedMessages });
+      }
     }
 
-    res.json({ success: true, pinnedMessage: null });
+    const userPinnedForRes = await prisma.userPinnedMessage.findMany({
+      where: { userId: req.user.id, chatId: req.params.id },
+      orderBy: { order: 'asc' },
+      include: { message: { include: { sender: { select: { id: true, username: true } } } } },
+    });
+    const pinnedMessagesForRes = mergePinnedForUser(chatPinned, userPinnedForRes);
+
+    res.json({ success: true, pinnedMessage: null, pinnedMessages: pinnedMessagesForRes });
   } catch (err) {
     console.error('Unpin message error:', err);
     res.status(500).json({ error: 'Ошибка открепления' });
@@ -925,6 +1115,11 @@ router.put('/:id/name', async (req, res) => {
     const updated = await prisma.chat.update({
       where: { id: req.params.id },
       data,
+      include: {
+        userChats: {
+          include: { user: { select: { id: true, username: true, avatar: true, status: true } } },
+        },
+      },
     });
     res.json(updated);
   } catch (err) {
