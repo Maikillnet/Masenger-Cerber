@@ -35,25 +35,19 @@ function Toggle({ checked, onChange, disabled }) {
 }
 
 export default function GroupSettingsModal({ data, onClose, currentUser, onUpdate, userStatus = {} }) {
-  const [name, setName] = useState(data?.name || '');
-  const [description, setDescription] = useState(data?.description || '');
-  const [hideMembers, setHideMembers] = useState(data?.hideMembers ?? false);
-  const [avatarPreview, setAvatarPreview] = useState(null);
-  const [newAvatarFile, setNewAvatarFile] = useState(null);
+  const [draft, setDraft] = useState({
+    name: data?.name || '',
+    description: data?.description || '',
+    hideMembers: data?.hideMembers ?? false,
+  });
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [croppedAvatar, setCroppedAvatar] = useState(null);
+  const [preview, setPreview] = useState(data?.avatar || null);
 
   const [showCropper, setShowCropper] = useState(false);
-  const [cropImageSrc, setCropImageSrc] = useState(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
-
-  useEffect(() => {
-    setName(data?.name || '');
-    setDescription(data?.description || '');
-    setHideMembers(data?.hideMembers ?? false);
-    setAvatarPreview(null);
-    setNewAvatarFile(null);
-  }, [data?.name, data?.description, data?.hideMembers, data?.id]);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -63,6 +57,16 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
   const [addLoading, setAddLoading] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    setDraft({
+      name: data?.name || '',
+      description: data?.description || '',
+      hideMembers: data?.hideMembers ?? false,
+    });
+    setPreview(data?.avatar || null);
+    setCroppedAvatar(null);
+  }, [data?.name, data?.description, data?.hideMembers, data?.avatar, data?.id]);
 
   const isAdmin =
     data?.isAdmin ??
@@ -85,29 +89,28 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
     setCroppedAreaPixels(croppedAreaPx);
   }, []);
 
-  const handleFileSelect = (e) => {
+  const handleAvatarSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setCropImageSrc(reader.result);
-      setShowCropper(true);
-      setCrop({ x: 0, y: 0 });
-      setZoom(1);
-      setCroppedAreaPixels(null);
-    };
-    reader.readAsDataURL(file);
+    if (avatarFile) URL.revokeObjectURL(avatarFile);
+    const url = URL.createObjectURL(file);
+    setAvatarFile(url);
+    setShowCropper(true);
+    setCrop({ x: 0, y: 0 });
+    setZoom(1);
+    setCroppedAreaPixels(null);
     e.target.value = '';
   };
 
   const handleApplyCrop = async () => {
-    if (!cropImageSrc || !croppedAreaPixels) return;
+    if (!avatarFile || !croppedAreaPixels) return;
     try {
-      const file = await getCroppedImg(cropImageSrc, croppedAreaPixels);
-      setNewAvatarFile(file);
-      setAvatarPreview(URL.createObjectURL(file));
+      const file = await getCroppedImg(avatarFile, croppedAreaPixels);
+      setCroppedAvatar(file);
+      setPreview(URL.createObjectURL(file));
       setShowCropper(false);
-      setCropImageSrc(null);
+      URL.revokeObjectURL(avatarFile);
+      setAvatarFile(null);
     } catch (err) {
       setError(err.message || 'Ошибка обрезки');
     }
@@ -115,36 +118,44 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
 
   const handleCancelCrop = () => {
     setShowCropper(false);
-    setCropImageSrc(null);
+    if (avatarFile) {
+      URL.revokeObjectURL(avatarFile);
+      setAvatarFile(null);
+    }
   };
 
-  const hasChanges =
-    name !== (data?.name || '') ||
-    description !== (data?.description ?? '') ||
-    hideMembers !== (data?.hideMembers ?? false) ||
-    !!newAvatarFile;
+  const draftDiffers =
+    draft.name !== (data?.name || '') ||
+    draft.description !== (data?.description ?? '') ||
+    draft.hideMembers !== (data?.hideMembers ?? false);
+  const hasChanges = draftDiffers || !!croppedAvatar;
 
-  const handleSave = async () => {
+  const handleSaveAll = async () => {
     if (!hasChanges) return;
     setSaving(true);
     setError('');
     try {
-      const payload = {};
-      if (name !== (data?.name || '') && name.trim()) payload.name = name.trim();
-      if (description !== (data?.description ?? ''))
-        payload.description = description?.slice(0, 200).trim() || null;
-      if (hideMembers !== (data?.hideMembers ?? false)) payload.hideMembers = hideMembers;
-
-      if (Object.keys(payload).length > 0) {
-        const updated = await updateGroupSettings(data.id, payload);
+      if (croppedAvatar) {
+        const updated = await uploadGroupAvatar(data.id, croppedAvatar);
         onUpdate?.({ ...data, ...updated });
+        setCroppedAvatar(null);
+        setPreview(data?.avatar || null);
       }
 
-      if (newAvatarFile) {
-        const updated = await uploadGroupAvatar(data.id, newAvatarFile);
-        onUpdate?.({ ...data, ...updated });
-        setNewAvatarFile(null);
-        setAvatarPreview(null);
+      if (draftDiffers) {
+        const payload = {};
+        const nameStr = String(draft.name ?? '').trim();
+        const dataNameStr = String(data?.name ?? '').trim();
+        if (nameStr && nameStr !== dataNameStr) payload.name = nameStr;
+        if (String(draft.description ?? '') !== String(data?.description ?? ''))
+          payload.description = (draft.description ?? '').slice(0, 200).trim() || null;
+        if (Boolean(draft.hideMembers) !== Boolean(data?.hideMembers ?? false))
+          payload.hideMembers = Boolean(draft.hideMembers);
+
+        if (Object.keys(payload).length > 0) {
+          const updated = await updateGroupSettings(data.id, payload);
+          onUpdate?.({ ...data, ...updated });
+        }
       }
     } catch (e) {
       setError(e.message || 'Ошибка сохранения');
@@ -250,7 +261,7 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
     }
   };
 
-  const showMembersList = isAdmin || !hideMembers;
+  const showMembersList = isAdmin || !draft.hideMembers;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end overflow-hidden">
@@ -268,10 +279,10 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
         aria-hidden="true"
       />
       <div
-        className="relative w-full max-w-[400px] h-full bg-white/5 backdrop-blur-md border-l border-white/10 shadow-2xl flex flex-col animate-slide-in-right"
+        className="relative w-full max-w-[400px] h-full bg-[#1a1a1a]/95 backdrop-blur-2xl border-l border-white/10 shadow-2xl flex flex-col animate-slide-in-right"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex-shrink-0 p-4 border-b border-white/10 flex items-center justify-between bg-white/5 backdrop-blur-md">
+        <header className="flex-shrink-0 p-4 border-b border-white/10 flex items-center justify-between bg-[#1a1a1a]/95 backdrop-blur-2xl">
           <h2 className="text-lg font-semibold text-gray-100">Информация о группе</h2>
           <button
             onClick={() => onClose?.()}
@@ -289,12 +300,12 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
             </div>
           )}
 
-          {/* КРОППЕР — поверх контента */}
-          {showCropper && cropImageSrc && (
+          {/* КРОППЕР — полноэкранный оверлей внутри модалки */}
+          {showCropper && avatarFile && (
             <div className="fixed inset-0 z-[55] flex flex-col bg-slate-900/95 backdrop-blur-xl">
               <div className="flex-1 relative min-h-0">
                 <Cropper
-                  image={cropImageSrc}
+                  image={avatarFile}
                   crop={crop}
                   zoom={zoom}
                   aspect={1}
@@ -333,7 +344,7 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
                     onClick={handleApplyCrop}
                     className="flex-1 py-2.5 rounded-xl bg-blue-500/80 hover:bg-blue-500 text-white font-medium text-sm transition-all"
                   >
-                    Применить кроп
+                    Применить обрезку
                   </button>
                 </div>
               </div>
@@ -345,15 +356,11 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
               {/* БЛОК: ПРОФИЛЬ */}
               <div className="flex flex-col items-center">
                 <div className="relative w-32 h-32 rounded-full overflow-hidden border-2 border-blue-500 shadow-xl mx-auto bg-white/10 flex items-center justify-center flex-shrink-0">
-                  {(avatarPreview || data?.avatar) ? (
-                    <img
-                      src={avatarPreview || data.avatar}
-                      alt=""
-                      className="w-full h-full object-cover"
-                    />
+                  {preview ? (
+                    <img src={preview} alt="" className="w-full h-full object-cover" />
                   ) : (
                     <span className="text-4xl font-bold text-gray-400">
-                      {data?.name?.[0]?.toUpperCase() || '?'}
+                      {draft.name?.[0]?.toUpperCase() || data?.name?.[0]?.toUpperCase() || '?'}
                     </span>
                   )}
                 </div>
@@ -362,7 +369,7 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
                   type="file"
                   accept="image/jpeg,image/png,image/webp,image/gif"
                   className="hidden"
-                  onChange={handleFileSelect}
+                  onChange={handleAvatarSelect}
                 />
                 {isAdmin && (
                   <button
@@ -379,10 +386,10 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
                   {isAdmin ? (
                     <input
                       type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      value={draft.name}
+                      onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))}
                       placeholder="Название группы"
-                      className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
+                      className="w-full bg-black/40 border border-white/20 text-white text-xl font-semibold text-center placeholder-gray-400 focus:outline-none focus:border-blue-500 rounded-xl px-4 py-2"
                     />
                   ) : (
                     <h3 className="text-xl font-semibold text-gray-100">{data?.name || 'Группа'}</h3>
@@ -401,13 +408,17 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
                       Описание группы
                     </span>
                     <textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value.slice(0, 200))}
+                      value={draft.description}
+                      onChange={(e) =>
+                        setDraft((p) => ({ ...p, description: e.target.value.slice(0, 200) }))
+                      }
                       placeholder="Краткое описание группы..."
                       rows={3}
-                      className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all resize-none"
+                      className="w-full bg-black/40 border border-white/20 text-white rounded-xl px-4 py-3 placeholder-gray-400 focus:outline-none focus:border-blue-500 transition-all resize-none"
                     />
-                    <span className="text-xs text-gray-500 mt-1 block">{description.length}/200</span>
+                    <span className="text-xs text-gray-500 mt-1 block">
+                      {draft.description.length}/200
+                    </span>
                   </label>
                   <div className="flex items-center justify-between gap-4 py-2">
                     <div className="flex-1 min-w-0">
@@ -415,10 +426,14 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
                         Скрыть список участников
                       </span>
                       <span className="text-xs text-gray-500">
-                        Если включено, только администраторы увидят список людей
+                        Обычные пользователи не увидят этот список
                       </span>
                     </div>
-                    <Toggle checked={hideMembers} onChange={setHideMembers} disabled={saving} />
+                    <Toggle
+                      checked={draft.hideMembers}
+                      onChange={(v) => setDraft((p) => ({ ...p, hideMembers: v }))}
+                      disabled={saving}
+                    />
                   </div>
                 </div>
               )}
@@ -427,7 +442,7 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
               {isAdmin && (
                 <button
                   type="button"
-                  onClick={handleSave}
+                  onClick={handleSaveAll}
                   disabled={!hasChanges || saving}
                   className="w-full py-3.5 rounded-2xl bg-blue-500/80 hover:bg-blue-500 text-white font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/50 shadow-lg"
                 >

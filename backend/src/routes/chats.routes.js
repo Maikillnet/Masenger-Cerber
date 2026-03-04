@@ -913,9 +913,9 @@ router.put('/:id/name', async (req, res) => {
     }
 
     const data = {};
-    if (name !== undefined) {
-      if (!String(name ?? '').trim()) return res.status(400).json({ error: 'Укажите название' });
-      data.name = String(name).trim();
+    if (name !== undefined && name !== null) {
+      const trimmed = String(name).trim();
+      if (trimmed) data.name = trimmed;
     }
     if (description !== undefined) data.description = description == null ? null : String(description ?? '').trim() || null;
     if (hideMembers !== undefined) data.hideMembers = Boolean(hideMembers);

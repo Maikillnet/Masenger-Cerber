@@ -275,10 +275,12 @@ export async function updateGroupName(chatId, name) {
 }
 
 export async function updateGroupSettings(chatId, payload) {
+  const body = { ...payload };
+  if (body.name !== undefined && !String(body.name ?? '').trim()) delete body.name;
   const res = await fetch(`${API_BASE}/chats/${chatId}/name`, {
     method: 'PUT',
     headers: getHeaders(),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
@@ -411,7 +413,7 @@ export async function unsubscribeChannel(id) {
 // Каналы — настройки
 export async function updateChannel(channelId, { name, description, hideMembers }) {
   const body = {};
-  if (name !== undefined) body.name = name;
+  if (name !== undefined && String(name ?? '').trim()) body.name = String(name).trim();
   if (description !== undefined) body.description = description;
   if (hideMembers !== undefined) body.hideMembers = hideMembers;
   const res = await fetch(`${API_BASE}/channels/${channelId}`, {
