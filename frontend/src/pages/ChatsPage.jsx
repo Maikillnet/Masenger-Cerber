@@ -658,7 +658,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 <LogOut size={20} />
               </button>
             )}
-            {((chat?.isGroup && (chat.creatorId === user?.id || chat.isAdmin)) || (channel && channel.isMember)) && (
+            {((chat?.isGroup) || (channel && channel.isMember)) && (
               <button
                 onClick={() => setShowSettings(true)}
                 className="p-2 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all"
@@ -698,18 +698,39 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 if (!post?.id) return null;
                 const mediaUrls = post.mediaUrls || (post.mediaUrl ? [post.mediaUrl] : []);
                 const mediaTypes = post.mediaTypes || (post.mediaType ? [post.mediaType] : []);
+                const isStickerPost = mediaUrls.length > 0 && mediaTypes.some((t) => t === 'sticker');
+                const stickerUrls = isStickerPost ? mediaUrls.filter((_, i) => (mediaTypes[i] || '') === 'sticker') : [];
+                const stickerList = isStickerPost ? (stickerUrls.length ? stickerUrls : mediaUrls) : [];
+                const stickerCount = stickerList.length;
+                const hasOnlyStickers = isStickerPost && !post.content;
                 const counts = post.reactionCounts || {};
                 const userReacted = post.userReacted;
                 const isExpanded = expandedPostId === post.id;
                 return (
                   <div key={post.id} className="w-full flex justify-center">
                     <div
-                      className="w-full max-w-[100%] rounded-2xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/5 shadow-xl"
+                      className={`w-full max-w-[100%] rounded-2xl overflow-hidden ${hasOnlyStickers ? '' : 'bg-white/10 backdrop-blur-sm border border-white/5'} shadow-xl`}
                       onContextMenu={(e) => handlePostContextMenu(e, post)}
                     >
                       {mediaUrls.length > 0 && (
                         <div className="relative w-full">
-                          <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
+                          {isStickerPost ? (
+                            <div
+                              className={`p-2 flex justify-center ${
+                                stickerCount === 1
+                                  ? 'w-40 h-40 sm:w-48 sm:h-48 mx-auto'
+                                  : stickerCount <= 4
+                                    ? 'grid grid-cols-2 gap-2 w-fit mx-auto'
+                                    : 'grid grid-cols-3 gap-1 w-fit mx-auto'
+                              }`}
+                            >
+                              {stickerList.map((url, idx) => (
+                                <img key={idx} src={url} alt="" className="w-full h-auto aspect-square object-contain transition-transform hover:scale-105 cursor-pointer" onClick={() => onOpenMediaViewer?.(mediaUrls, mediaTypes, mediaUrls.indexOf(url))} />
+                              ))}
+                            </div>
+                          ) : (
+                            <MediaGrid urls={mediaUrls} types={mediaTypes} className="rounded-t-2xl" onMediaClick={(idx) => onOpenMediaViewer?.(mediaUrls, mediaTypes, idx)} />
+                          )}
                         </div>
                       )}
                       <div className="p-4">
@@ -728,7 +749,7 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                           </div>
                         )}
                         {Object.entries(counts).filter(([, c]) => c > 0).length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1 mb-3">
+                          <div className={`flex flex-wrap items-center gap-1 mb-3 w-fit max-w-full min-w-0`}>
                             {Object.entries(counts)
                               .filter(([, c]) => c > 0)
                               .map(([emoji, count]) => (
@@ -796,7 +817,10 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
             const isOwn = msg.senderId === user?.id;
             const mediaUrls = msg.mediaUrls || (msg.mediaUrl ? [msg.mediaUrl] : []);
             const mediaTypes = msg.mediaTypes || (msg.mediaType ? [msg.mediaType] : []);
-            const isSticker = mediaUrls.length > 0 && mediaTypes[0] === 'sticker' && !msg.isDeleted;
+            const isSticker = mediaUrls.length > 0 && mediaTypes.some((t) => t === 'sticker') && !msg.isDeleted;
+            const stickerUrls = isSticker ? mediaUrls.filter((_, i) => (mediaTypes[i] || '') === 'sticker') : [];
+            const stickerList = isSticker ? (stickerUrls.length ? stickerUrls : mediaUrls) : [];
+            const stickerCount = stickerList.length;
             const hasMedia = mediaUrls.length > 0 && !msg.isDeleted;
             const hasText = !!(msg.content || msg.text) && !msg.isDeleted;
             const showTextBlock = hasText || msg.replyTo || msg.isDeleted;
@@ -809,15 +833,36 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                 onContextMenu={(e) => handleMessageContextMenu(e, msg)}
               >
                 {isSticker ? (
-                  <div className="relative flex flex-col items-center gap-1.5 min-w-[192px]">
-                    <img src={mediaUrls[0]} alt="" className="w-48 h-48 object-contain" />
-                    <div className="absolute bottom-1 right-2 flex items-center gap-1 select-none pointer-events-none text-[10px] opacity-60">
-                      <span className={isOwn ? 'text-blue-200' : 'text-gray-500'}>
-                        {new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}
-                        {msg.editedAt && ' (изм.)'}
-                      </span>
-                      {isOwn && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                  <div className={`relative flex flex-col w-fit max-w-[85%] sm:max-w-[35%] min-w-0 overflow-hidden ${isOwn ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                    <div
+                      className={`relative grid ${
+                        stickerCount === 1
+                          ? 'w-40 h-40 sm:w-48 sm:h-48'
+                          : stickerCount <= 4
+                            ? 'grid-cols-2 gap-2'
+                            : 'grid-cols-3 gap-1'
+                      }`}
+                    >
+                      {stickerList.map((url, idx) => (
+                        <img key={idx} src={url} alt="" className="w-full h-auto aspect-square object-contain transition-transform hover:scale-105" />
+                      ))}
+                      <div className="absolute bottom-1 right-1 bg-black/30 backdrop-blur-md px-1.5 py-0.5 rounded-full text-[10px] text-white flex items-center gap-1 select-none pointer-events-none">
+                        <span>{new Date(msg.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</span>
+                        {msg.editedAt && <span>(изм.)</span>}
+                        {isOwn && !msg.isDeleted && (msg.isRead ? <CheckCheck size={12} className="text-blue-400" /> : <Check size={12} />)}
+                      </div>
                     </div>
+                    {msg.replyTo && (
+                      <div className={`mt-1.5 border-l-2 pl-2 opacity-80 text-[15px] leading-snug w-fit ${isOwn ? 'border-blue-300/50' : 'border-white/20'}`}>
+                        <span className="font-medium">{msg.replyTo.sender?.username}</span>
+                        <p className="truncate">{msg.replyTo.isDeleted ? 'Сообщение удалено' : (msg.replyTo.content ?? msg.replyTo.text)}</p>
+                      </div>
+                    )}
+                    {hasText && (
+                      <div className="mt-1.5 px-2 py-1 rounded-lg bg-white/10 border border-white/10 text-gray-100 text-[15px] leading-snug whitespace-pre-wrap break-words w-fit max-w-full">
+                        {msg.content ?? msg.text}
+                      </div>
+                    )}
                     {(() => {
                       const seen = new Set();
                       const deduped = (msg.reactions || []).filter((r) => {
@@ -837,13 +882,13 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                       const list = Object.values(groups);
                       if (list.length === 0) return null;
                       return (
-                        <div className="flex flex-wrap gap-1 justify-center mt-1">
+                        <div className="flex flex-wrap gap-1 mt-1 w-fit max-w-full min-w-0">
                           {list.map((g) => (
                             <button
                               key={g.emoji}
                               type="button"
                               onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
-                              className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                              className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${
                                 g.userReacted
                                   ? 'bg-blue-500/30 border-blue-500/50 text-white'
                                   : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'
@@ -917,13 +962,13 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                         const list = Object.values(groups);
                         if (list.length === 0) return null;
                         return (
-                          <div className="flex flex-wrap gap-1">
+                          <div className="flex flex-wrap gap-1 w-fit max-w-full min-w-0">
                             {list.map((g) => (
                               <button
                                 key={g.emoji}
                                 type="button"
                                 onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
-                                className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                                className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${
                                   g.userReacted
                                     ? 'bg-blue-500/30 border-blue-500/50 text-white'
                                     : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'
@@ -965,13 +1010,13 @@ function ChatWindow({ chat, channel, messages, posts, postsLoading, onSend, onEd
                     const list = Object.values(groups);
                     if (list.length === 0) return null;
                     return (
-                      <div className="flex flex-wrap gap-1 px-2 pb-2 pt-1">
+                      <div className="flex flex-wrap gap-1 px-2 pb-2 pt-1 w-fit max-w-full min-w-0">
                         {list.map((g) => (
                           <button
                             key={g.emoji}
                             type="button"
                             onClick={() => g.userReacted ? onRemoveReaction?.(chat.id, msg.id, g.emoji) : onAddReaction?.(chat.id, msg.id, g.emoji)}
-                            className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 ${
+                            className={`px-2 py-0.5 rounded-lg text-sm border transition-colors flex items-center gap-1 shrink-0 ${
                               g.userReacted
                                 ? 'bg-blue-500/30 border-blue-500/50 text-white'
                                 : 'bg-white/10 border-white/10 text-gray-200 hover:bg-white/20'

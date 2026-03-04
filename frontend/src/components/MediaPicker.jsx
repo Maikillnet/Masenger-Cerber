@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getStickers } from '../api';
+import { getMyStickerPacks } from '../api';
 import { POPULAR_EMOJIS } from '../constants/emojis';
 
 export default function MediaPicker({ onSelect, className = '', emojiOnly = false, stickersOnly = false }) {
@@ -11,8 +11,8 @@ export default function MediaPicker({ onSelect, className = '', emojiOnly = fals
   useEffect(() => {
     if (activeTab === 'stickers') {
       setLoading(true);
-      getStickers()
-        .then(setPacks)
+      getMyStickerPacks()
+        .then((data) => setPacks(Array.isArray(data) ? data : []))
         .catch(() => setPacks([]))
         .finally(() => setLoading(false));
     }
@@ -133,7 +133,7 @@ export default function MediaPicker({ onSelect, className = '', emojiOnly = fals
                     }`}
                   >
                     <img
-                      src={pack.iconUrl}
+                      src={pack.iconUrl || pack.stickers?.[0]?.url}
                       alt={pack.name}
                       className="w-full h-full object-cover"
                     />

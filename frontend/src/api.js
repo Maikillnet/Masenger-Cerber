@@ -274,6 +274,17 @@ export async function updateGroupName(chatId, name) {
   return data;
 }
 
+export async function updateGroupSettings(chatId, payload) {
+  const res = await fetch(`${API_BASE}/chats/${chatId}/name`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+  return data;
+}
+
 export async function uploadGroupAvatar(chatId, file) {
   const formData = new FormData();
   formData.append('avatar', file);
@@ -398,10 +409,11 @@ export async function unsubscribeChannel(id) {
 }
 
 // Каналы — настройки
-export async function updateChannel(channelId, { name, description }) {
+export async function updateChannel(channelId, { name, description, hideMembers }) {
   const body = {};
   if (name !== undefined) body.name = name;
   if (description !== undefined) body.description = description;
+  if (hideMembers !== undefined) body.hideMembers = hideMembers;
   const res = await fetch(`${API_BASE}/channels/${channelId}`, {
     method: 'PUT',
     headers: getHeaders(),
@@ -571,6 +583,39 @@ export async function getStickers() {
   const res = await fetch(`${API_BASE}/stickers`, { headers: getHeaders() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Ошибка загрузки стикеров');
+  return data;
+}
+
+export async function createStickerPack(name, coverFile, stickerFiles) {
+  const formData = new FormData();
+  formData.append('name', name);
+  if (coverFile) formData.append('cover', coverFile);
+  stickerFiles.forEach(file => formData.append('stickers', file));
+
+  const res = await fetch(`${API_BASE}/stickers/packs`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка создания стикерпака');
+  return data;
+}
+
+export async function getMyStickerPacks() {
+  const res = await fetch(`${API_BASE}/stickers/my-packs`, { headers: getHeaders() });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка загрузки стикерпаков');
+  return data;
+}
+
+export async function deleteStickerPack(id) {
+  const res = await fetch(`${API_BASE}/stickers/packs/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Ошибка удаления стикерпака');
   return data;
 }
 

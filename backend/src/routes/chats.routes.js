@@ -31,7 +31,7 @@ const chatMediaStorage = multer.diskStorage({
 
 const uploadChatMedia = multer({
   storage: chatMediaStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB (для видео)
   fileFilter: (_req, file, cb) => {
     const allowed = /\.(jpg|jpeg|png|webp|gif|mp4)$/i;
     if (allowed.test(file.originalname)) cb(null, true);
@@ -51,7 +51,7 @@ const groupAvatarsStorage = multer.diskStorage({
 
 const uploadGroupAvatar = multer({
   storage: groupAvatarsStorage,
-  limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
   fileFilter: (_req, file, cb) => {
     const allowed = /\.(jpg|jpeg|png|gif|webp)$/i;
     if (allowed.test(file.originalname)) cb(null, true);
@@ -121,7 +121,7 @@ router.get('/', async (req, res) => {
           createdAt: { gt: myUserChat?.lastReadAt ?? new Date(0) },
         },
       });
-      result.push({
+      const item = {
         id: chat.id,
         isGroup: chat.isGroup,
         name: chat.name,
@@ -138,7 +138,24 @@ router.get('/', async (req, res) => {
           : null,
         unreadCount,
         updatedAt: chat.updatedAt,
-      });
+      };
+      if (chat.isGroup) {
+        const isAdmin = myUserChat?.role === 'admin';
+        item.isAdmin = isAdmin;
+        item.creatorId = chat.userChats.find((uc) => uc.role === 'admin')?.userId ?? null;
+        item.description = chat.description ?? null;
+        item.hideMembers = chat.hideMembers ?? false;
+        if (!chat.hideMembers || isAdmin) {
+          item.userChats = chat.userChats.map((uc) => ({
+            userId: uc.userId,
+            role: uc.role,
+            user: uc.user,
+          }));
+        } else {
+          item.userChats = [];
+        }
+      }
+      result.push(item);
     }
 
     res.json(result);
@@ -304,11 +321,21 @@ router.get('/:id', async (req, res) => {
       updatedAt: chat.updatedAt,
     };
     if (chat.isGroup) {
-      base.userChats = chat.userChats.map((uc) => ({
-        userId: uc.userId,
-        role: uc.role,
-        user: uc.user,
-      }));
+      const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
+      const isAdmin = myUserChat?.role === 'admin';
+      base.description = chat.description ?? null;
+      base.hideMembers = chat.hideMembers ?? false;
+      base.isAdmin = isAdmin;
+      base.creatorId = chat.userChats.find((uc) => uc.role === 'admin')?.userId ?? null;
+      if (!chat.hideMembers || isAdmin) {
+        base.userChats = chat.userChats.map((uc) => ({
+          userId: uc.userId,
+          role: uc.role,
+          user: uc.user,
+        }));
+      } else {
+        base.userChats = [];
+      }
     }
     res.json(base);
   } catch (err) {
@@ -865,11 +892,10 @@ router.put('/:id/read', async (req, res) => {
 
 // ============ API настроек групп (только для групповых чатов) ============
 
-// PUT /api/chats/:id/name — обновление названия группы (только admin)
+// PUT /api/chats/:id/name — обновление названия, описания и hideMembers группы (только admin)
 router.put('/:id/name', async (req, res) => {
   try {
-    const { name } = req.body;
-    if (!name?.trim()) return res.status(400).json({ error: 'Укажите название' });
+    const { name, description, hideMembers } = req.body;
 
     const chat = await prisma.chat.findFirst({
       where: {
@@ -883,12 +909,22 @@ router.put('/:id/name', async (req, res) => {
 
     const myUserChat = chat.userChats.find((uc) => uc.userId === req.user.id);
     if (myUserChat?.role !== 'admin') {
-      return res.status(403).json({ error: 'Только администратор может менять название' });
+      return res.status(403).json({ error: 'Только администратор может менять настройки группы' });
     }
+
+    const data = {};
+    if (name !== undefined) {
+      if (!String(name ?? '').trim()) return res.status(400).json({ error: 'Укажите название' });
+      data.name = String(name).trim();
+    }
+    if (description !== undefined) data.description = description == null ? null : String(description ?? '').trim() || null;
+    if (hideMembers !== undefined) data.hideMembers = Boolean(hideMembers);
+
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'Укажите name, description или hideMembers' });
 
     const updated = await prisma.chat.update({
       where: { id: req.params.id },
-      data: { name: name.trim() },
+      data,
     });
     res.json(updated);
   } catch (err) {

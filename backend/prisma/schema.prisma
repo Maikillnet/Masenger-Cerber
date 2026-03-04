@@ -33,6 +33,7 @@ model User {
   channelMembers  ChannelMember[]
   postReactions   PostReaction[]
   stories        Story[]
+  stickerPacks   StickerPack[]
 }
 
 // ============ ЧАТЫ (личные и групповые) ============
@@ -40,6 +41,8 @@ model Chat {
   id              String   @id @default(uuid())
   isGroup         Boolean  @default(false)
   name            String?  // Для групповых чатов
+  description     String?  // Описание группы
+  hideMembers     Boolean  @default(false) // Скрывать список участников от не-админов
   avatar          String?  // Аватар группового чата
   pinnedMessageId String?
   pinnedMessage   Message? @relation("PinnedMessage", fields: [pinnedMessageId], references: [id], onDelete: SetNull)
@@ -106,6 +109,7 @@ model Channel {
   name        String
   slug        String   @unique
   description String?
+  hideMembers Boolean  @default(false) // Скрывать список подписчиков от не-админов
   avatar      String?
   isPublic    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -214,15 +218,20 @@ model Comment {
 // ============ СТИКЕРЫ ============
 model StickerPack {
   id        String    @id @default(uuid())
-  name      String    @unique
-  iconUrl   String    // Иконка самого набора
+  name      String
+  iconUrl   String?   // URL первого стикера
+  coverUrl  String?   // обложка пака
+  authorId  String?   // null = старый/глобальный пак
+  author    User?     @relation(fields: [authorId], references: [id], onDelete: Cascade)
   stickers  Sticker[]
   createdAt DateTime  @default(now())
+
+  @@index([authorId])
 }
 
 model Sticker {
   id     String      @id @default(uuid())
-  url    String      // Путь к файлу стикера
+  url    String
   packId String
   pack   StickerPack @relation(fields: [packId], references: [id], onDelete: Cascade)
 

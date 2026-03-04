@@ -165,11 +165,16 @@ router.get('/:id', async (req, res) => {
     const mem = await prisma.channelMember.findUnique({
       where: { userId_channelId: { userId: req.user.id, channelId: channel.id } },
     });
-    res.json({
+    const isAdmin = channel.creatorId === req.user.id || mem?.role === 'admin';
+    const result = {
       ...channel,
       isMember: !!mem || channel.creatorId === req.user.id,
-      isAdmin: channel.creatorId === req.user.id || mem?.role === 'admin',
-    });
+      isAdmin,
+    };
+    if (channel.hideMembers && !isAdmin) {
+      result.members = [];
+    }
+    res.json(result);
   } catch (err) {
     console.error('Get channel error:', err);
     res.status(500).json({ error: 'Ошибка загрузки канала' });
@@ -379,10 +384,10 @@ router.post('/:id/posts', uploadMedia.array('media', 20), async (req, res) => {
 
 // ============ API настроек каналов ============
 
-// PUT /api/channels/:id — обновление названия и описания (только creatorId)
+// PUT /api/channels/:id — обновление названия, описания и hideMembers (только creatorId)
 router.put('/:id', async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, description, hideMembers } = req.body;
 
     const channel = await prisma.channel.findUnique({
       where: { id: req.params.id },
@@ -405,8 +410,9 @@ router.put('/:id', async (req, res) => {
       }
     }
     if (description !== undefined) data.description = description?.trim() || null;
+    if (hideMembers !== undefined) data.hideMembers = Boolean(hideMembers);
     if (Object.keys(data).length === 0) {
-      return res.status(400).json({ error: 'Укажите name или description' });
+      return res.status(400).json({ error: 'Укажите name, description или hideMembers' });
     }
 
     const updated = await prisma.channel.update({

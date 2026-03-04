@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { X, Camera, LogOut, Trash2, UserPlus } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { X, LogOut, Trash2, UserPlus } from 'lucide-react';
 import LeaveConfirmModal from './LeaveConfirmModal';
 import {
   updateChannel,
@@ -8,21 +8,52 @@ import {
   leaveChannel,
 } from '../api';
 
+function Toggle({ checked, onChange, disabled }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${
+        checked ? 'bg-blue-500' : 'bg-white/10'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
+          checked ? 'translate-x-5' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  );
+}
+
 export default function ChannelSettingsModal({ data, onClose, currentUser, onUpdate, userStatus = {} }) {
   const [name, setName] = useState(data?.name || '');
   const [description, setDescription] = useState(data?.description || '');
+  const [hideMembers, setHideMembers] = useState(data?.hideMembers ?? false);
+  const [avatarPreview, setAvatarPreview] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const fileInputRef = useRef(null);
 
+  useEffect(() => {
+    setName(data?.name || '');
+    setDescription(data?.description || '');
+    setHideMembers(data?.hideMembers ?? false);
+    setAvatarPreview(null);
+  }, [data?.name, data?.description, data?.hideMembers, data?.id]);
+
   const isAdmin = data?.creatorId === currentUser?.id;
   const members = data?.members || [];
+  const memberCount = data?._count?.members ?? members.length;
 
   const handleSave = async () => {
     const updates = {};
     if (name?.trim() !== data?.name) updates.name = name.trim();
-    if (description !== (data?.description ?? '')) updates.description = description?.trim() || null;
+    if (description !== (data?.description ?? '')) updates.description = description?.slice(0, 200).trim() || null;
     if (Object.keys(updates).length === 0) return;
 
     setSaving(true);
@@ -37,23 +68,37 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
     }
   };
 
-  const handleAvatarClick = () => {
-    if (isAdmin) fileInputRef.current?.click();
-  };
-
   const handleAvatarChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setAvatarPreview(reader.result);
+    reader.readAsDataURL(file);
     setSaving(true);
     setError('');
     try {
       const updated = await uploadChannelAvatar(data.id, file);
       onUpdate?.(updated);
+      setAvatarPreview(null);
     } catch (e) {
       setError(e.message);
     } finally {
       setSaving(false);
       e.target.value = '';
+    }
+  };
+
+  const handleToggleHideMembers = async (value) => {
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await updateChannel(data.id, { hideMembers: value });
+      onUpdate?.(updated);
+      setHideMembers(value);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -151,10 +196,10 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
         aria-hidden="true"
       />
       <div
-        className="relative w-full max-w-[400px] h-full bg-slate-900/95 backdrop-blur-3xl border-l border-white/10 shadow-2xl flex flex-col animate-slide-in-right"
+        className="relative w-full max-w-[400px] h-full bg-white/5 backdrop-blur-md border-l border-white/10 shadow-2xl flex flex-col animate-slide-in-right"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex-shrink-0 p-4 border-b border-white/10 flex items-center justify-between bg-white/5">
+        <header className="flex-shrink-0 p-4 border-b border-white/10 flex items-center justify-between bg-white/5 backdrop-blur-md">
           <h2 className="text-lg font-semibold text-gray-100">Информация о канале</h2>
           <button
             onClick={() => onClose?.()}
@@ -174,22 +219,21 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
 
           {/* БЛОК А: ПРОФИЛЬ */}
           <div className="flex flex-col items-center">
-            <div
-              className={`relative w-24 h-24 rounded-full overflow-hidden bg-white/10 flex items-center justify-center flex-shrink-0 ${
-                isAdmin ? 'cursor-pointer hover:ring-2 hover:ring-blue-500/50 transition-all' : ''
-              }`}
-              onClick={handleAvatarClick}
-            >
-              {data?.avatar ? (
-                <img src={data.avatar} alt="" className="w-full h-full object-cover" />
+            <div className="relative w-32 h-32 rounded-full overflow-hidden border-2 border-blue-500 shadow-xl mx-auto bg-white/10 flex items-center justify-center flex-shrink-0">
+              {(avatarPreview || data?.avatar) ? (
+                <img
+                  src={avatarPreview || data.avatar}
+                  alt=""
+                  className="w-full h-full object-cover"
+                />
               ) : (
-                <span className="text-3xl font-bold text-gray-400">
+                <span className="text-4xl font-bold text-gray-400">
                   {data?.name?.[0]?.toUpperCase() || '?'}
                 </span>
               )}
-              {isAdmin && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity">
-                  <Camera size={28} className="text-white" />
+              {saving && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                  <span className="text-sm text-white">Загрузка...</span>
                 </div>
               )}
             </div>
@@ -200,54 +244,77 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
               className="hidden"
               onChange={handleAvatarChange}
             />
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={saving}
+                className="mt-3 px-4 py-2 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/30 transition-all text-sm font-medium disabled:opacity-50"
+              >
+                Изменить фото
+              </button>
+            )}
 
-            <div className="mt-4 w-full text-center space-y-2">
+            <div className="mt-4 w-full text-center">
               {isAdmin ? (
-                <>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    onBlur={handleSave}
-                    placeholder="Название канала"
-                    className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
-                  />
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    onBlur={handleSave}
-                    placeholder="Описание"
-                    rows={2}
-                    className="w-full bg-transparent border-none text-sm text-gray-400 text-center placeholder-gray-500 focus:outline-none focus:ring-0 resize-none"
-                  />
-                </>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onBlur={handleSave}
+                  placeholder="Название канала"
+                  className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
+                />
               ) : (
-                <>
-                  <h3 className="text-xl font-semibold text-gray-100">{data?.name || 'Канал'}</h3>
-                  {data?.description && (
-                    <p className="text-sm text-gray-400">{data.description}</p>
-                  )}
-                </>
+                <h3 className="text-xl font-semibold text-gray-100">{data?.name || 'Канал'}</h3>
               )}
             </div>
-            <p className="text-sm text-gray-500 mt-1">{members.length} подписчиков</p>
+            <p className="text-sm text-gray-500 mt-1">{memberCount} подписчиков</p>
           </div>
+
+          {/* БЛОК: ОПИСАНИЕ И НАСТРОЙКИ */}
+          {isAdmin && (
+            <div className="space-y-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-4">
+              <label className="block">
+                <span className="text-sm font-medium text-gray-400 mb-2 block">Описание канала</span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value.slice(0, 200))}
+                  onBlur={handleSave}
+                  placeholder="Краткое описание канала..."
+                  rows={3}
+                  className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all resize-none"
+                />
+                <span className="text-xs text-gray-500 mt-1 block">{description.length}/200</span>
+              </label>
+              <div className="flex items-center justify-between gap-4 py-2">
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-gray-300 block">Скрыть список подписчиков</span>
+                  <span className="text-xs text-gray-500">
+                    Если включено, только администраторы увидят список людей
+                  </span>
+                </div>
+                <Toggle
+                  checked={hideMembers}
+                  onChange={handleToggleHideMembers}
+                  disabled={saving}
+                />
+              </div>
+            </div>
+          )}
 
           {/* БЛОК Б: ПОДПИСЧИКИ */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium text-gray-400">Подписчики</h4>
-              <button
-                type="button"
-                className="flex items-center gap-1.5 px-2 py-1 text-sm text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
-                title="Добавить (скоро)"
-              >
-                <UserPlus size={16} />
-                Добавить
-              </button>
             </div>
-            <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-              {members.map((m) => {
+            <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden">
+              {members.length === 0 && data?.hideMembers && !isAdmin ? (
+                <p className="p-4 text-sm text-gray-500 text-center">
+                  Список подписчиков скрыт администратором ({memberCount} подписчиков)
+                </p>
+              ) : (
+              members.map((m) => {
                 const status = userStatus[m.userId] ?? m.user?.status ?? 'offline';
                 return (
                   <div
@@ -297,12 +364,13 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
                     )}
                   </div>
                 );
-              })}
+              })
+              )}
             </div>
           </div>
 
           {/* БЛОК В: ОПАСНАЯ ЗОНА */}
-          <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+          <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden flex flex-col">
             {data?.creatorId !== currentUser?.id && (
               <button
                 onClick={handleLeave}
