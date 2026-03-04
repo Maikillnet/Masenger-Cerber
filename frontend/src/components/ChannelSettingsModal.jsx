@@ -50,10 +50,16 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
   const members = data?.members || [];
   const memberCount = data?._count?.members ?? members.length;
 
+  const hasChanges =
+    (name?.trim() !== (data?.name ?? '') && name?.trim()) ||
+    description !== (data?.description ?? '') ||
+    hideMembers !== (data?.hideMembers ?? false);
+
   const handleSave = async () => {
     const updates = {};
-    if (name?.trim() !== data?.name) updates.name = name.trim();
+    if (name?.trim() !== (data?.name ?? '') && name?.trim()) updates.name = name.trim();
     if (description !== (data?.description ?? '')) updates.description = description?.slice(0, 200).trim() || null;
+    if (hideMembers !== (data?.hideMembers ?? false)) updates.hideMembers = hideMembers;
     if (Object.keys(updates).length === 0) return;
 
     setSaving(true);
@@ -85,20 +91,6 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
     } finally {
       setSaving(false);
       e.target.value = '';
-    }
-  };
-
-  const handleToggleHideMembers = async (value) => {
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await updateChannel(data.id, { hideMembers: value });
-      onUpdate?.(updated);
-      setHideMembers(value);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -261,7 +253,6 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  onBlur={handleSave}
                   placeholder="Название канала"
                   className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
                 />
@@ -280,7 +271,6 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value.slice(0, 200))}
-                  onBlur={handleSave}
                   placeholder="Краткое описание канала..."
                   rows={3}
                   className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all resize-none"
@@ -296,11 +286,23 @@ export default function ChannelSettingsModal({ data, onClose, currentUser, onUpd
                 </div>
                 <Toggle
                   checked={hideMembers}
-                  onChange={handleToggleHideMembers}
+                  onChange={setHideMembers}
                   disabled={saving}
                 />
               </div>
             </div>
+          )}
+
+          {/* КНОПКА СОХРАНЕНИЯ */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!hasChanges || saving}
+              className="w-full py-3.5 rounded-2xl bg-blue-500/80 hover:bg-blue-500 text-white font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/50 shadow-lg"
+            >
+              {saving ? 'Сохранение...' : 'Сохранить изменения'}
+            </button>
           )}
 
           {/* БЛОК Б: ПОДПИСЧИКИ */}

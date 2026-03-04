@@ -399,7 +399,9 @@ router.put('/:id', async (req, res) => {
 
     const data = {};
     if (name !== undefined) {
-      data.name = String(name).trim();
+      const trimmed = String(name ?? '').trim();
+      if (!trimmed) return res.status(400).json({ error: 'Укажите название канала' });
+      data.name = trimmed;
       if (data.name) {
         let slug = slugify(data.name);
         const existing = await prisma.channel.findFirst({

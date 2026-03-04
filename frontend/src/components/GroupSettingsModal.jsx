@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import Cropper from 'react-easy-crop';
 import { X, LogOut, Trash2, UserPlus, Check } from 'lucide-react';
 import LeaveConfirmModal from './LeaveConfirmModal';
+import getCroppedImg from '../utils/cropImage';
 import {
-  updateGroupName,
   updateGroupSettings,
   uploadGroupAvatar,
   removeGroupMember,
@@ -38,12 +39,20 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
   const [description, setDescription] = useState(data?.description || '');
   const [hideMembers, setHideMembers] = useState(data?.hideMembers ?? false);
   const [avatarPreview, setAvatarPreview] = useState(null);
+  const [newAvatarFile, setNewAvatarFile] = useState(null);
+
+  const [showCropper, setShowCropper] = useState(false);
+  const [cropImageSrc, setCropImageSrc] = useState(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
 
   useEffect(() => {
     setName(data?.name || '');
     setDescription(data?.description || '');
     setHideMembers(data?.hideMembers ?? false);
     setAvatarPreview(null);
+    setNewAvatarFile(null);
   }, [data?.name, data?.description, data?.hideMembers, data?.id]);
 
   const [saving, setSaving] = useState(false);
@@ -55,7 +64,10 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const fileInputRef = useRef(null);
 
-  const isAdmin = data?.isAdmin ?? data?.userChats?.find((uc) => uc.userId === currentUser?.id)?.role === 'admin' ?? data?.creatorId === currentUser?.id;
+  const isAdmin =
+    data?.isAdmin ??
+    data?.userChats?.find((uc) => uc.userId === currentUser?.id)?.role === 'admin' ??
+    data?.creatorId === currentUser?.id;
   const participants = data?.userChats || [];
 
   useEffect(() => {
@@ -68,6 +80,78 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
   }, [showAddMembers]);
 
   const availableUsers = allUsers.filter((u) => !participants.some((p) => p.userId === u.id));
+
+  const onCropComplete = useCallback((_, croppedAreaPx) => {
+    setCroppedAreaPixels(croppedAreaPx);
+  }, []);
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCropImageSrc(reader.result);
+      setShowCropper(true);
+      setCrop({ x: 0, y: 0 });
+      setZoom(1);
+      setCroppedAreaPixels(null);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleApplyCrop = async () => {
+    if (!cropImageSrc || !croppedAreaPixels) return;
+    try {
+      const file = await getCroppedImg(cropImageSrc, croppedAreaPixels);
+      setNewAvatarFile(file);
+      setAvatarPreview(URL.createObjectURL(file));
+      setShowCropper(false);
+      setCropImageSrc(null);
+    } catch (err) {
+      setError(err.message || 'Ошибка обрезки');
+    }
+  };
+
+  const handleCancelCrop = () => {
+    setShowCropper(false);
+    setCropImageSrc(null);
+  };
+
+  const hasChanges =
+    name !== (data?.name || '') ||
+    description !== (data?.description ?? '') ||
+    hideMembers !== (data?.hideMembers ?? false) ||
+    !!newAvatarFile;
+
+  const handleSave = async () => {
+    if (!hasChanges) return;
+    setSaving(true);
+    setError('');
+    try {
+      const payload = {};
+      if (name !== (data?.name || '') && name.trim()) payload.name = name.trim();
+      if (description !== (data?.description ?? ''))
+        payload.description = description?.slice(0, 200).trim() || null;
+      if (hideMembers !== (data?.hideMembers ?? false)) payload.hideMembers = hideMembers;
+
+      if (Object.keys(payload).length > 0) {
+        const updated = await updateGroupSettings(data.id, payload);
+        onUpdate?.({ ...data, ...updated });
+      }
+
+      if (newAvatarFile) {
+        const updated = await uploadGroupAvatar(data.id, newAvatarFile);
+        onUpdate?.({ ...data, ...updated });
+        setNewAvatarFile(null);
+        setAvatarPreview(null);
+      }
+    } catch (e) {
+      setError(e.message || 'Ошибка сохранения');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleAddMembers = async () => {
     if (selectedUserIds.length === 0) return;
@@ -89,68 +173,6 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
     setSelectedUserIds((prev) =>
       prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]
     );
-  };
-
-  const handleSaveName = async () => {
-    if (!name.trim() || name === data?.name) return;
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await updateGroupName(data.id, name);
-      onUpdate?.(updated);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleAvatarChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setAvatarPreview(reader.result);
-    reader.readAsDataURL(file);
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await uploadGroupAvatar(data.id, file);
-      onUpdate?.(updated);
-      setAvatarPreview(null);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-      e.target.value = '';
-    }
-  };
-
-  const handleSaveDescription = async () => {
-    if (description === (data?.description || '')) return;
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await updateGroupSettings(data.id, { description: description.slice(0, 200).trim() || null });
-      onUpdate?.({ ...data, ...updated });
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleToggleHideMembers = async (value) => {
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await updateGroupSettings(data.id, { hideMembers: value });
-      onUpdate?.({ ...data, ...updated });
-      setHideMembers(value);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
   };
 
   const handleKick = async (userId) => {
@@ -228,6 +250,8 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
     }
   };
 
+  const showMembersList = isAdmin || !hideMembers;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end overflow-hidden">
       <LeaveConfirmModal
@@ -265,258 +289,331 @@ export default function GroupSettingsModal({ data, onClose, currentUser, onUpdat
             </div>
           )}
 
-          {/* БЛОК А: ПРОФИЛЬ */}
-          <div className="flex flex-col items-center">
-            <div className="relative w-32 h-32 rounded-full overflow-hidden border-2 border-blue-500 shadow-xl mx-auto bg-white/10 flex items-center justify-center flex-shrink-0">
-              {(avatarPreview || data?.avatar) ? (
-                <img
-                  src={avatarPreview || data.avatar}
-                  alt=""
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <span className="text-4xl font-bold text-gray-400">
-                  {data?.name?.[0]?.toUpperCase() || '?'}
-                </span>
-              )}
-              {saving && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <span className="text-sm text-white">Загрузка...</span>
-                </div>
-              )}
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/gif"
-              className="hidden"
-              onChange={handleAvatarChange}
-            />
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={saving}
-                className="mt-3 px-4 py-2 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/30 transition-all text-sm font-medium disabled:opacity-50"
-              >
-                Изменить фото
-              </button>
-            )}
-
-            <div className="mt-4 w-full text-center">
-              {isAdmin ? (
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onBlur={handleSaveName}
-                  placeholder="Название группы"
-                  className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
-                />
-              ) : (
-                <h3 className="text-xl font-semibold text-gray-100">{data?.name || 'Группа'}</h3>
-              )}
-            </div>
-            <p className="text-sm text-gray-500 mt-1">{data?.participantCount ?? participants.length} участников</p>
-          </div>
-
-          {/* БЛОК: ОПИСАНИЕ И НАСТРОЙКИ */}
-          {isAdmin && (
-            <div className="space-y-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-4">
-              <label className="block">
-                <span className="text-sm font-medium text-gray-400 mb-2 block">Описание группы</span>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value.slice(0, 200))}
-                  onBlur={handleSaveDescription}
-                  placeholder="Краткое описание группы..."
-                  rows={3}
-                  className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all resize-none"
-                />
-                <span className="text-xs text-gray-500 mt-1 block">{description.length}/200</span>
-              </label>
-              <div className="flex items-center justify-between gap-4 py-2">
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-medium text-gray-300 block">Скрыть список участников</span>
-                  <span className="text-xs text-gray-500">
-                    Если включено, только администраторы увидят список людей
-                  </span>
-                </div>
-                <Toggle
-                  checked={hideMembers}
-                  onChange={handleToggleHideMembers}
-                  disabled={saving}
+          {/* КРОППЕР — поверх контента */}
+          {showCropper && cropImageSrc && (
+            <div className="fixed inset-0 z-[55] flex flex-col bg-slate-900/95 backdrop-blur-xl">
+              <div className="flex-1 relative min-h-0">
+                <Cropper
+                  image={cropImageSrc}
+                  crop={crop}
+                  zoom={zoom}
+                  aspect={1}
+                  cropShape="round"
+                  showGrid={false}
+                  onCropChange={setCrop}
+                  onCropComplete={onCropComplete}
+                  onZoomChange={setZoom}
+                  minZoom={1}
+                  maxZoom={3}
                 />
               </div>
-            </div>
-          )}
-
-          {/* БЛОК Б: УЧАСТНИКИ */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-medium text-gray-400">Участники</h4>
-              {isAdmin && !showAddMembers && (
-                <button
-                  type="button"
-                  onClick={() => setShowAddMembers(true)}
-                  className="flex items-center gap-1.5 px-2 py-1 text-sm text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
-                >
-                  <UserPlus size={16} />
-                  Добавить участника
-                </button>
-              )}
-              {isAdmin && showAddMembers && (
-                <button
-                  type="button"
-                  onClick={() => setShowAddMembers(false)}
-                  className="text-sm text-gray-400 hover:text-white"
-                >
-                  Отмена
-                </button>
-              )}
-            </div>
-            {showAddMembers ? (
-              <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden">
-                <div className="max-h-48 overflow-y-auto p-2">
-                  {availableUsers.length === 0 ? (
-                    <p className="text-sm text-gray-500 p-3">Нет пользователей для добавления</p>
-                  ) : (
-                    availableUsers.map((u) => (
-                      <label
-                        key={u.id}
-                        className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
-                      >
-                        <div className="relative flex-shrink-0 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                          {u.avatar ? (
-                            <img src={u.avatar} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <span className="text-gray-400 text-sm font-medium">
-                              {u.username?.[0]?.toUpperCase() || '?'}
-                            </span>
-                          )}
-                        </div>
-                        <span className="flex-1 text-gray-100 text-sm truncate">
-                          {u.username || 'Пользователь'}
-                        </span>
-                        <div
-                          className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                            selectedUserIds.includes(u.id)
-                              ? 'bg-blue-500 border-blue-500 text-white'
-                              : 'border-white/30'
-                          }`}
-                        >
-                          {selectedUserIds.includes(u.id) && <Check size={14} strokeWidth={3} />}
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={selectedUserIds.includes(u.id)}
-                          onChange={() => toggleUserSelection(u.id)}
-                          className="sr-only"
-                        />
-                      </label>
-                    ))
-                  )}
+              <div className="p-4 border-t border-white/10 bg-white/5 backdrop-blur-md space-y-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">Масштаб</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={3}
+                    step={0.1}
+                    value={zoom}
+                    onChange={(e) => setZoom(Number(e.target.value))}
+                    className="flex-1 h-2 rounded-full bg-white/10 accent-blue-500"
+                  />
                 </div>
-                <div className="p-3 border-t border-white/10 flex gap-2">
+                <div className="flex gap-3">
                   <button
                     type="button"
-                    onClick={() => setShowAddMembers(false)}
-                    className="flex-1 py-2.5 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 text-gray-400 hover:bg-white/10 hover:text-white transition-all text-sm font-medium"
+                    onClick={handleCancelCrop}
+                    className="flex-1 py-2.5 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-white transition-all text-sm font-medium"
                   >
                     Отмена
                   </button>
                   <button
                     type="button"
-                    onClick={handleAddMembers}
-                    disabled={selectedUserIds.length === 0 || addLoading}
-                    className="flex-1 py-2.5 rounded-xl bg-blue-500/80 hover:bg-blue-500 text-white font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/50"
+                    onClick={handleApplyCrop}
+                    className="flex-1 py-2.5 rounded-xl bg-blue-500/80 hover:bg-blue-500 text-white font-medium text-sm transition-all"
                   >
-                    {addLoading ? 'Добавление...' : `Добавить (${selectedUserIds.length})`}
+                    Применить кроп
                   </button>
                 </div>
               </div>
-            ) : (
-              <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden">
-              {participants.length === 0 && data?.hideMembers && !isAdmin ? (
-                <p className="p-4 text-sm text-gray-500 text-center">
-                  Список участников скрыт администратором ({data?.participantCount ?? 0} участников)
-                </p>
-              ) : (
-              participants.map((uc) => {
-                const status = userStatus[uc.userId] ?? uc.user?.status ?? 'offline';
-                return (
-                  <div
-                    key={uc.userId}
-                    className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0"
+            </div>
+          )}
+
+          {!showCropper && (
+            <>
+              {/* БЛОК: ПРОФИЛЬ */}
+              <div className="flex flex-col items-center">
+                <div className="relative w-32 h-32 rounded-full overflow-hidden border-2 border-blue-500 shadow-xl mx-auto bg-white/10 flex items-center justify-center flex-shrink-0">
+                  {(avatarPreview || data?.avatar) ? (
+                    <img
+                      src={avatarPreview || data.avatar}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-4xl font-bold text-gray-400">
+                      {data?.name?.[0]?.toUpperCase() || '?'}
+                    </span>
+                  )}
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={saving}
+                    className="mt-3 px-4 py-2 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/30 transition-all text-sm font-medium disabled:opacity-50"
                   >
-                    <div className="relative flex-shrink-0 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                      {uc.user?.avatar ? (
-                        <img src={uc.user.avatar} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <span className="text-gray-400 font-medium">
-                          {uc.user?.username?.[0]?.toUpperCase() || '?'}
-                        </span>
-                      )}
-                      {status === 'online' && (
-                        <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-slate-900" />
-                      )}
-                    </div>
+                    Изменить фото
+                  </button>
+                )}
+
+                <div className="mt-4 w-full text-center">
+                  {isAdmin ? (
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Название группы"
+                      className="w-full bg-transparent border-none text-xl font-semibold text-gray-100 text-center placeholder-gray-500 focus:outline-none focus:ring-0"
+                    />
+                  ) : (
+                    <h3 className="text-xl font-semibold text-gray-100">{data?.name || 'Группа'}</h3>
+                  )}
+                </div>
+                <p className="text-sm text-gray-500 mt-1">
+                  {data?.participantCount ?? participants.length} участников
+                </p>
+              </div>
+
+              {/* БЛОК: ОПИСАНИЕ И НАСТРОЙКИ */}
+              {isAdmin && (
+                <div className="space-y-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-4">
+                  <label className="block">
+                    <span className="text-sm font-medium text-gray-400 mb-2 block">
+                      Описание группы
+                    </span>
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value.slice(0, 200))}
+                      placeholder="Краткое описание группы..."
+                      rows={3}
+                      className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500/50 transition-all resize-none"
+                    />
+                    <span className="text-xs text-gray-500 mt-1 block">{description.length}/200</span>
+                  </label>
+                  <div className="flex items-center justify-between gap-4 py-2">
                     <div className="flex-1 min-w-0">
-                      <span className="text-gray-100 font-medium block truncate">
-                        {uc.user?.username || 'Пользователь'}
+                      <span className="text-sm font-medium text-gray-300 block">
+                        Скрыть список участников
                       </span>
                       <span className="text-xs text-gray-500">
-                        {uc.userId === currentUser?.id
-                          ? 'Вы'
-                          : status === 'online'
-                            ? 'в сети'
-                            : 'не в сети'}
+                        Если включено, только администраторы увидят список людей
                       </span>
                     </div>
-                    {uc.role === 'admin' && (
-                      <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-1 rounded-md flex-shrink-0">
-                        Админ
-                      </span>
-                    )}
-                    {isAdmin && uc.userId !== currentUser?.id && (
+                    <Toggle checked={hideMembers} onChange={setHideMembers} disabled={saving} />
+                  </div>
+                </div>
+              )}
+
+              {/* КНОПКА СОХРАНЕНИЯ */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={!hasChanges || saving}
+                  className="w-full py-3.5 rounded-2xl bg-blue-500/80 hover:bg-blue-500 text-white font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/50 shadow-lg"
+                >
+                  {saving ? 'Сохранение...' : 'Сохранить изменения'}
+                </button>
+              )}
+
+              {/* БЛОК: УЧАСТНИКИ */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-medium text-gray-400">Участники</h4>
+                  {isAdmin && !showAddMembers && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMembers(true)}
+                      className="flex items-center gap-1.5 px-2 py-1 text-sm text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                    >
+                      <UserPlus size={16} />
+                      Добавить участника
+                    </button>
+                  )}
+                  {isAdmin && showAddMembers && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMembers(false)}
+                      className="text-sm text-gray-400 hover:text-white"
+                    >
+                      Отмена
+                    </button>
+                  )}
+                </div>
+                {showAddMembers ? (
+                  <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden">
+                    <div className="max-h-48 overflow-y-auto p-2">
+                      {availableUsers.length === 0 ? (
+                        <p className="text-sm text-gray-500 p-3">Нет пользователей для добавления</p>
+                      ) : (
+                        availableUsers.map((u) => (
+                          <label
+                            key={u.id}
+                            className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
+                          >
+                            <div className="relative flex-shrink-0 w-9 h-9 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
+                              {u.avatar ? (
+                                <img src={u.avatar} alt="" className="w-full h-full object-cover" />
+                              ) : (
+                                <span className="text-gray-400 text-sm font-medium">
+                                  {u.username?.[0]?.toUpperCase() || '?'}
+                                </span>
+                              )}
+                            </div>
+                            <span className="flex-1 text-gray-100 text-sm truncate">
+                              {u.username || 'Пользователь'}
+                            </span>
+                            <div
+                              className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                                selectedUserIds.includes(u.id)
+                                  ? 'bg-blue-500 border-blue-500 text-white'
+                                  : 'border-white/30'
+                              }`}
+                            >
+                              {selectedUserIds.includes(u.id) && <Check size={14} strokeWidth={3} />}
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={selectedUserIds.includes(u.id)}
+                              onChange={() => toggleUserSelection(u.id)}
+                              className="sr-only"
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="p-3 border-t border-white/10 flex gap-2">
                       <button
-                        onClick={() => handleKick(uc.userId)}
-                        disabled={saving}
-                        className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50 flex-shrink-0"
-                        title="Исключить"
+                        type="button"
+                        onClick={() => setShowAddMembers(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-white/5 backdrop-blur-md border border-white/10 text-gray-400 hover:bg-white/10 hover:text-white transition-all text-sm font-medium"
                       >
-                        <Trash2 size={18} />
+                        Отмена
                       </button>
+                      <button
+                        type="button"
+                        onClick={handleAddMembers}
+                        disabled={selectedUserIds.length === 0 || addLoading}
+                        className="flex-1 py-2.5 rounded-xl bg-blue-500/80 hover:bg-blue-500 text-white font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/50"
+                      >
+                        {addLoading ? 'Добавление...' : `Добавить (${selectedUserIds.length})`}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden">
+                    {!showMembersList ? (
+                      <p className="p-4 text-sm text-gray-500 text-center">
+                        Список участников скрыт администратором (
+                        {data?.participantCount ?? participants.length} участников)
+                      </p>
+                    ) : (
+                      participants.map((uc) => {
+                        const status =
+                          userStatus[uc.userId] ?? uc.user?.status ?? 'offline';
+                        return (
+                          <div
+                            key={uc.userId}
+                            className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0"
+                          >
+                            <div className="relative flex-shrink-0 w-10 h-10 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
+                              {uc.user?.avatar ? (
+                                <img
+                                  src={uc.user.avatar}
+                                  alt=""
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-gray-400 font-medium">
+                                  {uc.user?.username?.[0]?.toUpperCase() || '?'}
+                                </span>
+                              )}
+                              {status === 'online' && (
+                                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-slate-900" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-gray-100 font-medium block truncate">
+                                {uc.user?.username || 'Пользователь'}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {uc.userId === currentUser?.id
+                                  ? 'Вы'
+                                  : status === 'online'
+                                    ? 'в сети'
+                                    : 'не в сети'}
+                              </span>
+                            </div>
+                            {uc.role === 'admin' && (
+                              <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-1 rounded-md flex-shrink-0">
+                                Админ
+                              </span>
+                            )}
+                            {isAdmin && uc.userId !== currentUser?.id && (
+                              <button
+                                onClick={() => handleKick(uc.userId)}
+                                disabled={saving}
+                                className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50 flex-shrink-0"
+                                title="Исключить"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
-                );
-              })
-              )}
+                )}
               </div>
-            )}
-          </div>
 
-          {/* БЛОК В: ОПАСНАЯ ЗОНА */}
-          <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden flex flex-col">
-            <button
-              onClick={handleLeave}
-              disabled={saving}
-              className="flex items-center gap-3 w-full p-4 text-left text-red-400 hover:bg-white/5 transition-colors border-b border-white/5 disabled:opacity-50"
-            >
-              <LogOut size={20} />
-              Покинуть группу
-            </button>
-            {isAdmin && (
-              <button
-                onClick={handleDelete}
-                disabled={saving}
-                className="flex items-center gap-3 w-full p-4 text-left text-red-400 hover:bg-white/5 transition-colors disabled:opacity-50"
-              >
-                <Trash2 size={20} />
-                Удалить группу
-              </button>
-            )}
-          </div>
+              {/* ОПАСНАЯ ЗОНА */}
+              <div className="rounded-2xl overflow-hidden border border-red-500/20 bg-red-500/5 backdrop-blur-md">
+                <div className="px-4 py-2 border-b border-red-500/20 bg-red-500/10">
+                  <span className="text-sm font-medium text-red-400">Опасная зона</span>
+                </div>
+                <div className="flex flex-col">
+                  <button
+                    onClick={handleLeave}
+                    disabled={saving}
+                    className="flex items-center gap-3 w-full p-4 text-left text-red-400 hover:bg-red-500/10 transition-colors border-b border-red-500/10 last:border-0 disabled:opacity-50"
+                  >
+                    <LogOut size={20} />
+                    Покинуть группу
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={handleDelete}
+                      disabled={saving}
+                      className="flex items-center gap-3 w-full p-4 text-left text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 size={20} />
+                      Удалить группу
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

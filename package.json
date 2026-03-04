@@ -14,5 +14,8 @@
     "db:seed": "npm run db:seed -w backend",
     "db:studio": "npm run db:studio -w backend",
     "test": "npm run test -w backend"
+  },
+  "dependencies": {
+    "react-easy-crop": "^5.5.6"
   }
 }
